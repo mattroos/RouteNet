@@ -1,0 +1,8 @@
+# This is an example file of what the config.txt file should look like. The
+# config.txt file can be specific for a user and system/machine, and should
+# not be pushed to github.
+
+[Data Directories]
+dirMnistData = /Users/roosmj1/Data/pylearn2data/mnist
+# dirMnistData = /home/mroos/Data/pylearn2data/mnist
+
