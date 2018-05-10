@@ -287,6 +287,11 @@ def train(epoch):
 
             loss.backward()
             optimizer.step()
+            # TODO?: Currently have to use batch size of one. Could we accumulate
+            # gradients over a number of samples and then update weights, without
+            # using the optimizer? Can't use usual pytorch approach because
+            # the constructed graph can be difference for each sample, during
+            # training.
 
             loss_sum = loss_sum + loss.data.cpu().numpy()[0]
             prob_open_gate_sum += prob_open_gate
