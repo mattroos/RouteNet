@@ -16,6 +16,16 @@ import matplotlib.pyplot as plt
 
 plt.ion()
 
+# IDEA: Can we pretrain without gating so batches can be used? And then
+# do additional training with gates? Or, could keep gates, but use as
+# soft gates.
+# TODO: Measure how many gates are active on average, and report during training.
+# TODO: Add activation loss. All activations or just gates?
+# TODO: Hard sigmoid gate activation function, and probabilistic gating.
+# TODO: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
+# TODO: Accompanying mechanisms to modulate learning?
+
+
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
 configParser.readfp(open(r'config.txt'))
@@ -95,7 +105,7 @@ class RouteNet(nn.Module):
                  idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
         super(RouteNet, self).__init__()
 
-        # "bank_conn" definew the connectivity of the banks. This is an NxN boolean matrix for 
+        # "bank_conn" defines the connectivity of the banks. This is an NxN boolean matrix for 
         # which a True value in the i,j-th entry indictes that bank i is a source of input to
         # bank j. The matrix could define any structure of banks, including for example, a
         # feedforward layered structure or a structure in which all banks are connected.
@@ -151,6 +161,8 @@ class RouteNet(nn.Module):
         # complete processing of the data from input to output.
 
         bank_data_acts = np.full(self.n_hidd_banks, None)
+        n_open_gates = 0
+        prob_open_gate = None
 
         x = x.view(-1, 784)
 
@@ -181,6 +193,7 @@ class RouteNet(nn.Module):
                     # TODO: Apply hard sigmoid and roll the dice to see if gate is open or closed
                     # Just using above or below zero for now....
                     if gate_act.data[0,0] > 0:
+                        n_open_gates += 1
                         module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
                         data_act = getattr(self, module_name)(bank_data_acts[i_source])
                         if bank_data_acts[i_target] is None:
@@ -195,7 +208,7 @@ class RouteNet(nn.Module):
         # not have any active inputs, so have to check for that.
         output = None
         if np.all(bank_data_acts[self.idx_output_banks]==None):
-            return output
+            return output, prob_open_gate
         for i_output_bank in self.idx_output_banks:
             if bank_data_acts[i_output_bank] is not None:
                 module_name = 'b%0.2d_output_data' % (i_output_bank)
@@ -207,9 +220,10 @@ class RouteNet(nn.Module):
 
         if output is not None:
             output = F.log_softmax(output, dim=1)
+            prob_open_gate = n_open_gates / self.n_hidd_banks
         # TODO: Add output activations to total activation energy?
 
-        return output
+        return output, prob_open_gate
 
         # p = 0.0
         # x = x.view(-1, 784)
@@ -237,7 +251,7 @@ def make_conn_matrix(banks_per_layer):
     return bank_conn
 
 
-banks_per_layer = np.asarray([5,5])
+banks_per_layer = np.asarray([10,10])
 bank_conn = make_conn_matrix(banks_per_layer)
 model = RouteNet(n_input_neurons=784, \
                  idx_input_banks=np.arange(banks_per_layer[0]), \
@@ -253,6 +267,7 @@ optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 def train(epoch):
     model.train()
     loss_sum = 0.0
+    prob_open_gate_sum = 0.0
     cnt = 0
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -261,7 +276,7 @@ def train(epoch):
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         # act_fc1, act_fc2, act_fc3, output = model(data)
-        output = model(data)
+        output, prob_open_gate = model(data)
 
         if output is not None:
             loss_nll = F.nll_loss(output, target)
@@ -274,13 +289,14 @@ def train(epoch):
             optimizer.step()
 
             loss_sum = loss_sum + loss.data.cpu().numpy()[0]
+            prob_open_gate_sum += prob_open_gate
             cnt += args.batch_size
 
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%), {:d} valid]\tLoss: {:.6f}, {:.2f} seconds'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%), {:d} valid]\tLoss: {:.6f}\tProb open gate: {:.2f}\t{:.2f} seconds'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 # 100. * batch_idx / len(train_loader), loss.data[0]))
-                100. * batch_idx / len(train_loader), cnt, loss_sum/cnt, time.time()-t_start))
+                100. * batch_idx / len(train_loader), cnt, loss_sum/cnt, prob_open_gate_sum/cnt, time.time()-t_start))
             loss_sum = 0.0
             cnt = 0
             t_start = time.time()
