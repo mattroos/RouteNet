@@ -11,6 +11,20 @@ import time
 import sys
 
 
+def make_conn_matrix(banks_per_layer):
+    n_layers = len(banks_per_layer)
+    n_banks = np.sum(banks_per_layer)
+    bank_conn = np.full((n_banks, n_banks), False)
+    idx_banks = []
+    cnt = 0
+    for i_layer in range(n_layers):
+        idx_banks.append(np.arange(cnt, cnt+banks_per_layer[i_layer]))
+        cnt += banks_per_layer[i_layer]
+    for i_layer in range(n_layers-1):
+        bank_conn[np.meshgrid(idx_banks[i_layer], idx_banks[i_layer+1])] = True
+    return bank_conn
+
+
 ## DOES IS MAKE SENSE TO USE NN MODULE? BECAUSE OF GATING, WE CAN'T USE A BATCH
 ## SIZE OF MORE THAN 1.  SO WHAT IS VALUE OF NN MODULE?
 class RouteNet(nn.Module):
@@ -28,6 +42,7 @@ class RouteNet(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.bank_conn = bank_conn
+        self.n_bank_conn = np.sum(bank_conn)
         self.idx_input_banks = idx_input_banks
         self.idx_output_banks = idx_output_banks
 
@@ -74,6 +89,8 @@ class RouteNet(nn.Module):
         # complete processing of the data from input to output.
 
         bank_data_acts = np.full(self.n_hidd_banks, None)
+        n_open_gates = 0
+        prob_open_gate = None
 
         x = x.view(-1, 784)
 
@@ -86,7 +103,7 @@ class RouteNet(nn.Module):
         # Update activations of all the hidden banks. These are gated.
         for i_target in range(self.n_hidd_banks):
             # Get list of source banks that are connected to this target bank
-            idx_source = np.where(bank_conn[:,i_target])[0]
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
 
             # Check to see if all source bank activations are None, in which case
             # nothing has to be done.
@@ -104,6 +121,7 @@ class RouteNet(nn.Module):
                     # TODO: Apply hard sigmoid and roll the dice to see if gate is open or closed
                     # Just using above or below zero for now....
                     if gate_act.data[0,0] > 0:
+                        n_open_gates += 1
                         module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
                         data_act = getattr(self, module_name)(bank_data_acts[i_source])
                         if bank_data_acts[i_target] is None:
@@ -118,7 +136,7 @@ class RouteNet(nn.Module):
         # not have any active inputs, so have to check for that.
         output = None
         if np.all(bank_data_acts[self.idx_output_banks]==None):
-            return output
+            return output, prob_open_gate
         for i_output_bank in self.idx_output_banks:
             if bank_data_acts[i_output_bank] is not None:
                 module_name = 'b%0.2d_output_data' % (i_output_bank)
@@ -130,9 +148,10 @@ class RouteNet(nn.Module):
 
         if output is not None:
             output = F.log_softmax(output, dim=1)
+            prob_open_gate = n_open_gates / float(self.n_bank_conn)
         # TODO: Add output activations to total activation energy?
 
-        return output
+        return output, prob_open_gate
 
         # p = 0.0
         # x = x.view(-1, 784)

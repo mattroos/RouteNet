@@ -1,2 +1,1 @@
-import routenet
-
+from routenet import *
