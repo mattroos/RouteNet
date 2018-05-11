@@ -37,12 +37,12 @@ dirMnistData = configParser.get('Data Directories', 'dirMnistData')
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-parser.add_argument('--batch-size', type=int, default=1, metavar='N',
-                    help='input batch size for training (default: 1)')
-parser.add_argument('--test-batch-size', type=int, default=1, metavar='N',
-                    help='input batch size for testing (default: 1)')
-parser.add_argument('--epochs', type=int, default=2, metavar='N',
-                    help='number of epochs to train (default: 2)')
+parser.add_argument('--batch-size', type=int, default=100, metavar='N',
+                    help='input batch size for training (default: 100)')
+parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
+                    help='input batch size for testing (default: 100)')
+parser.add_argument('--epochs', type=int, default=10, metavar='N',
+                    help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
 parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
@@ -54,12 +54,12 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--lambda-nll', type=float, default=1.0, metavar='N',
-                    help='weighting on nll loss. weight on activation loss is 1-lambda_nll.')
+                    help='weighting on nll loss. weight on gate activation loss is 1-lambda_nll.')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 lambda_nll = args.lambda_nll
-lambda_act = 1 - args.lambda_nll
+lambda_gate = 1 - args.lambda_nll
 
 torch.manual_seed(args.seed)
 if args.cuda:
@@ -95,11 +95,14 @@ if args.cuda:
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
-def train(epoch):
+def train_softgate(epoch):
     model.train()
     loss_sum = 0.0
     prob_open_gate_sum = 0.0
     cnt = 0
+    loss_nll_train_hist = np.asarray([])
+    loss_gate_train_hist = np.asarray([])
+    loss_total_train_hist = np.asarray([])
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
         if args.cuda:
@@ -107,14 +110,13 @@ def train(epoch):
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         # act_fc1, act_fc2, act_fc3, output = model(data)
-        output, prob_open_gate = model(data)
+        # output, prob_open_gate = model(data)
+        output, total_gate_act, prob_open_gate = model.forward_softgate(data)
 
         if output is not None:
             loss_nll = F.nll_loss(output, target)
-            # loss_act = torch.mean(act_fc3) + torch.mean(act_fc2) + torch.mean(act_fc1)
-            # loss_act = torch.mean(act_fc3) + torch.mean(act_fc2)
-            # loss = lambda_nll*loss_nll + lambda_act*loss_act
-            loss = loss_nll
+            loss_gate = torch.mean(total_gate_act)
+            loss = lambda_nll*loss_nll + lambda_gate*loss_gate
 
             loss.backward()
             optimizer.step()
@@ -128,15 +130,20 @@ def train(epoch):
             prob_open_gate_sum += prob_open_gate
             cnt += args.batch_size
 
+            loss_nll_train_hist = np.append(loss_nll_train_hist, loss_nll.data.cpu().numpy()[0])
+            loss_gate_train_hist = np.append(loss_gate_train_hist, loss_gate.data.cpu().numpy()[0])
+            loss_total_train_hist = np.append(loss_total_train_hist, loss.data.cpu().numpy()[0])
+
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%), {:d} valid]\tLoss: {:.6f}\tProb open gate: {:.2f}\t{:.2f} seconds'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%), {:d} valid]\tLoss: {:.6f}\tProb open gate: {:.6f}\t{:.2f} seconds'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 # 100. * batch_idx / len(train_loader), loss.data[0]))
                 100. * batch_idx / len(train_loader), cnt, loss_sum/cnt, prob_open_gate_sum/cnt, time.time()-t_start))
             loss_sum = 0.0
             prob_open_gate_sum = 0.0
             cnt = 0
-            t_start = time.time()
+    # return loss_sum/cnt
+    return loss_total_train_hist, loss_nll_train_hist, loss_gate_train_hist
 
 def test():
     model.eval()
@@ -149,10 +156,12 @@ def test():
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
         #act_fc1, act_fc2, act_fc3, output = model(data)
-        output, _ = model(data)
+        # output, _ = model(data)
+        output, _ = model.forward_softgate(data)
 
         if output is not None:
             test_loss_nll += F.nll_loss(output, target, size_average=False).data[0] # sum up batch loss
+            # test_loss_gate += torch.mean(total_gate_act)
             # test_loss_act = (torch.mean(act_fc3) + torch.mean(act_fc2) + torch.mean(act_fc1)).data[0]
             # test_loss_act = (torch.mean(act_fc3) + torch.mean(act_fc2)).data[0]
             test_loss = test_loss_nll
@@ -165,48 +174,78 @@ def test():
     # test_loss_act /= len(test_loader.dataset)
     # test_loss = lambda_nll * test_loss_nll + lambda_act * test_loss_act
     test_loss_nll /= cnt
-    print('\nTest bank: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
     return test_loss_nll, test_loss_act
 
+def test_softgate():
+    model.eval()
+    test_loss_nll = 0
+    test_loss_gate = 0
+    correct = 0
+    for data, target in test_loader:
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
+        output, total_gate_act, _ = model.forward_softgate(data)
+
+        if output is not None:
+            test_loss_nll += F.nll_loss(output, target, size_average=False).data[0] # sum up batch loss
+            test_loss_gate += torch.mean(total_gate_act).data[0]
+
+            pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+
+    test_loss_nll /= len(test_loader.dataset)
+    test_loss_gate /= len(test_loader.dataset)
+    test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
+    print('\nTest bank: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_loss, correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
+    return test_loss, test_loss_nll, test_loss_gate
+
 
 ## Run it
+loss_total = np.zeros(args.epochs)
 loss_nll = np.zeros(args.epochs)
-loss_act = np.zeros(args.epochs)
+loss_gate = np.zeros(args.epochs)
 t_start = time.time()
 for epoch in range(1, args.epochs + 1):
-    train(epoch)
-    loss_nll[epoch-1], loss_act[epoch-1] = test()
+    train_softgate(epoch)
+    # loss_nll[epoch-1], loss_act[epoch-1] = test()
+    loss_total[epoch-1], loss_nll[epoch-1], loss_gate[epoch-1] = test_softgate()
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 fn = 1
 
-## Plot losses for test bank
+## Plot losses for test set
 plt.figure(fn)
 fn = fn + 1
 plt.clf()
 
 plt.subplot(3,1,1)
 plt.semilogy(loss_nll,'bo-')
-plt.title('NLL loss')
+plt.title('Test set: NLL loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(3,1,2)
-plt.semilogy(loss_act, 'o-')
-plt.title('Activation loss')
+plt.semilogy(loss_gate, 'o-')
+plt.title('Test set: Activation loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(3,1,3)
-plt.semilogy(lambda_act * loss_act + lambda_nll * loss_nll, 'ro-')
-plt.title('Total loss')
+# plt.semilogy(lambda_act * loss_act + lambda_nll * loss_nll, 'ro-')
+plt.semilogy(loss_total, 'o-')
+plt.title('Test set: Total loss')
 plt.xlabel('Epoch')
 plt.grid()
 
+sys.exit()
 ## Plot the weights
 weights = []
 grads = []

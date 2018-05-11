@@ -82,7 +82,6 @@ class RouteNet(nn.Module):
         #    than nothing needs to be done. The default mode for a gate is closed, such that
         #    a "table of open gates" can be iteratively updated and used to determine which banks
         #    need updating and which inputs they should process. This might be done asyncronously.
-        #    
 
         # ASSUMPTION: For now, I'm assuming that the structure is layered and feedforward such that one pass
         # through the connection matrix from low index value to high index value will result in
@@ -152,6 +151,88 @@ class RouteNet(nn.Module):
         # TODO: Add output activations to total activation energy?
 
         return output, prob_open_gate
+
+        # p = 0.0
+        # x = x.view(-1, 784)
+        # act_fc1 = F.relu(self.fc1(x))
+        # act_fc1 = F.dropout(act_fc1, p=p, training=self.training)
+        # act_fc2 = F.relu(self.fc2(act_fc1))
+        # act_fc2 = F.dropout(act_fc2, p=p, training=self.training)
+        # act_fc3 = F.relu(self.fc3(act_fc2))
+        # act_fc3 = F.dropout(act_fc3, p=p, training=self.training)
+        # act_fc4 = self.fc4(act_fc3)
+        # return torch.sqrt(act_fc1), torch.sqrt(act_fc2), torch.sqrt(act_fc3), F.log_softmax(act_fc4, dim=1)
+        # # return act_fc1, act_fc2, act_fc3, F.log_softmax(act_fc4, dim=1)
+
+
+    def forward_softgate(self, x):
+        # Unlike the main forward() method, this one uses soft gates
+        # thus allowing batches to be used in training. The notion
+        # is that this could be used for fast pre-training, and then
+        # forward() used for final training with hard gating.
+
+        bank_data_acts = np.full(self.n_hidd_banks, None)
+        prob_open_gate = 0
+        n_open_gates = 0
+        output = None
+        total_gate_act = 0
+
+        x = x.view(-1, 784)
+
+        # Update activations of all the input banks. These are not gated.
+        for i_input_bank in self.idx_input_banks:
+            module_name = 'input_b%0.2d_data' % (i_input_bank)
+            bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
+            # TODO: Add activations to total activation energy?
+
+        # Update activations of all the hidden banks. These are soft gated.
+        for i_target in range(self.n_hidd_banks):
+            # Get list of source banks that are connected to this target bank
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+
+            # Compute gate values for each of the input banks, and multiply
+            # by the incoming activations.
+            for i_source in idx_source:
+                module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
+                gate_act = getattr(self, module_name)(bank_data_acts[i_source])
+
+                # TODO: Apply hard sigmoid, RELU, or similar
+                # gate_act = F.relu(gate_act)
+                # gate_act = F.sigmoid(gate_act)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+                total_gate_act += gate_act
+                # TODO: Add activations to total activation energy?
+
+                # prob_open_gate += gate_act.data[0,0]
+                # TODO: I THINK I'M ONLY LOOKING AT FIRST SAMPLE IN THE BATCH HERE...
+                if gate_act.data[0,0] > 0:
+                    n_open_gates += 1
+
+                module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
+                data_act = getattr(self, module_name)(bank_data_acts[i_source])
+                if bank_data_acts[i_target] is None:
+                    bank_data_acts[i_target] = gate_act * data_act
+                else:
+                    bank_data_acts[i_target] += gate_act * data_act
+
+            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            # TODO: Add activations to total activation energy?
+
+        # Update activations of the output layer. The output banks are not gated.
+        for i_output_bank in self.idx_output_banks:
+            module_name = 'b%0.2d_output_data' % (i_output_bank)
+            data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
+            if output is None:
+                output = data_act
+            else:
+                output += data_act
+
+        output = F.log_softmax(output, dim=1)
+        prob_open_gate = n_open_gates / float(self.n_bank_conn)
+        print('%d, %d' % (n_open_gates, self.n_bank_conn))
+        # TODO: Add output activations to total activation energy?
+
+        return output, total_gate_act, prob_open_gate
 
         # p = 0.0
         # x = x.view(-1, 784)
