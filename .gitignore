@@ -1,6 +1,9 @@
 # Specific files
 config.txt
 
+# Stuff from Pycharm
+.idea
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
