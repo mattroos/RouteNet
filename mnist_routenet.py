@@ -19,10 +19,12 @@ import routenet as rn
 
 plt.ion()
 
-# TODO: Try training with dropout.
+# TODO: Code for model saving and loading
 # TODO: Probabilistic gating.
 # TODO: Pretrain with soft gating so batches can be used. And then
-# do additional training with hard, probabilistic gates.
+#       do additional training with hard, probabilistic gates.
+# TODO: Allow for lambda scheduling: Start with low weight on gating
+#       activation and increase with each epoch.
 # TODO: Add activation loss. All activations or just gates?
 
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?

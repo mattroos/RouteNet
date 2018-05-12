@@ -45,15 +45,26 @@ class RouteNet(nn.Module):
         self.n_bank_conn = np.sum(bank_conn)
         self.idx_input_banks = idx_input_banks
         self.idx_output_banks = idx_output_banks
+        self.prob_dropout_data = 0.5
+        self.prob_dropout_gate = 0.5
 
-        # Create all the hidden nn.Linear modules including those for data and those for gates
+        # Create all the hidden nn.Linear modules including those for data and those for gates.
+        # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
+        # Each source/target combo and each source/gate combo?
         for i_source in range(n_hidd_banks):
             for i_target in range(n_hidd_banks):
                 if bank_conn[i_source, i_target]:
-                    module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank))
+                    module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
+                    setattr(self, module_name, nn.Dropout(p=self.prob_dropout_gate))
+
                     module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
                     setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, 1))
+
+                    module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
+                    setattr(self, module_name, nn.Dropout(p=self.prob_dropout_data))
+
+                    module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
+                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
 
         # Create the connections between inputs and banks that receive inputs
         for i_input_bank in idx_input_banks:
@@ -194,10 +205,14 @@ class RouteNet(nn.Module):
             # Compute gate values for each of the input banks, and multiply
             # by the incoming activations.
             for i_source in idx_source:
+                # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
+                # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
+                module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
+                dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
                 module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                gate_act = getattr(self, module_name)(bank_data_acts[i_source])
+                gate_act = getattr(self, module_name)(dropout_act)
                 
-                # Apply hard sigmoid, RELU, or similar
+                ## Apply hard sigmoid, RELU, or similar
                 gate_act = F.relu(gate_act)
                 # gate_act = F.sigmoid(gate_act)
                 # gate_act = F.hardtanh(gate_act, 0.0, 1.0)
@@ -207,8 +222,12 @@ class RouteNet(nn.Module):
                 z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                 n_open_gates += np.sum(z)
 
+                # module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
+                # data_act = getattr(self, module_name)(bank_data_acts[i_source])
+                module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
+                dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
                 module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                data_act = getattr(self, module_name)(bank_data_acts[i_source])
+                data_act = getattr(self, module_name)(dropout_act)
 
                 if bank_data_acts[i_target] is None:
                     bank_data_acts[i_target] = gate_act * data_act
