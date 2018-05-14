@@ -135,7 +135,7 @@ def train_softgate(epoch):
         optimizer.zero_grad()
         # act_fc1, act_fc2, act_fc3, output = model(data)
         # output, prob_open_gate = model(data)
-        output, total_gate_act, prob_open_gate = model.forward_softgate(data)
+        output, total_gate_act, prob_open_gate, _ = model.forward_softgate(data)
 
         loss_nll = F.nll_loss(output, target, size_average=True)
         loss_gate = torch.mean(total_gate_act)
@@ -208,7 +208,7 @@ def test_softgate():
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
-        output, total_gate_act, prob_open_gate = model.forward_softgate(data)
+        output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data)
 
         test_loss_nll += F.nll_loss(output, target, size_average=True).data[0] # sum up batch loss
         test_loss_gate += torch.mean(total_gate_act).data[0]
@@ -227,7 +227,7 @@ def test_softgate():
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
-    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc
+    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gate_status
 
 
 ## Set up DataLoaders
@@ -248,7 +248,7 @@ test_loader = torch.utils.data.DataLoader(
 
 
 ## Instantiate network model
-banks_per_layer = np.asarray([10,10])
+banks_per_layer = np.asarray([10, 10, 10, 10])
 bank_conn = rn.make_conn_matrix(banks_per_layer)
 model = rn.RouteNet(n_input_neurons=784, \
                  idx_input_banks=np.arange(banks_per_layer[0]), \
@@ -271,7 +271,7 @@ acc = np.zeros(args.epochs)
 t_start = time.time()
 for epoch in range(0, args.epochs):
     train_softgate(epoch+1)
-    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch] = test_softgate()
+    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status = test_softgate()
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))

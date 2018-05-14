@@ -45,8 +45,8 @@ class RouteNet(nn.Module):
         self.n_bank_conn = np.sum(bank_conn)
         self.idx_input_banks = idx_input_banks
         self.idx_output_banks = idx_output_banks
-        self.prob_dropout_data = 0.5
-        self.prob_dropout_gate = 0.5
+        self.prob_dropout_data = 0.0
+        self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
         # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
@@ -191,6 +191,8 @@ class RouteNet(nn.Module):
         x = x.view(-1, 784)
         batch_size = len(x)
 
+        gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
         # Update activations of all the input banks. These are not gated.
         for i_input_bank in self.idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
@@ -218,6 +220,8 @@ class RouteNet(nn.Module):
                 # gate_act = F.hardtanh(gate_act, 0.0, 1.0)
                 total_gate_act += gate_act
                 # TODO: Add activations to total activation energy?
+
+                gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
 
                 z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                 n_open_gates += np.sum(z)
@@ -250,5 +254,5 @@ class RouteNet(nn.Module):
         prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
         # TODO: Add output activations to total activation energy?
 
-        return output, total_gate_act, prob_open_gate
+        return output, total_gate_act, prob_open_gate, gate_status
 
