@@ -2,7 +2,11 @@
 # config.txt file can be specific for a user and system/machine, and should
 # not be pushed to github.
 
+
 [Data Directories]
+
 dirMnistData = /Users/roosmj1/Data/pylearn2data/mnist
 # dirMnistData = /home/mroos/Data/pylearn2data/mnist
-
+dirCifar10Data = /home/mroos/Code/pytorch-cifar/data
+fullRootFilenameSoftModel = /Users/roosmj1/scratch/model_routenet_soft
+fullRootFilenameHardModel = /Users/roosmj1/scratch/model_routenet_hard

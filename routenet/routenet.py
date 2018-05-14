@@ -32,6 +32,13 @@ class RouteNet(nn.Module):
                  idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
         super(RouteNet, self).__init__()
 
+        self.n_input_neurons = n_input_neurons
+        self.idx_input_banks = idx_input_banks
+        self.bank_conn = bank_conn
+        self.idx_output_banks = idx_output_banks
+        self.n_output_neurons = n_output_neurons
+        self.n_neurons_per_hidd_bank = n_neurons_per_hidd_bank
+
         # "bank_conn" defines the connectivity of the banks. This is an NxN boolean matrix for 
         # which a True value in the i,j-th entry indictes that bank i is a source of input to
         # bank j. The matrix could define any structure of banks, including for example, a
@@ -41,10 +48,7 @@ class RouteNet(nn.Module):
         assert (bank_conn.shape[1] == n_hidd_banks), "bank_conn connectivity matrix must have two dimensions of equal size."
 
         self.n_hidd_banks = n_hidd_banks
-        self.bank_conn = bank_conn
         self.n_bank_conn = np.sum(bank_conn)
-        self.idx_input_banks = idx_input_banks
-        self.idx_output_banks = idx_output_banks
         self.prob_dropout_data = 0.0
         self.prob_dropout_gate = 0.0
 
@@ -76,6 +80,16 @@ class RouteNet(nn.Module):
             module_name = 'b%0.2d_output_data' % (i_output_bank)
             setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons))
 
+    @classmethod
+    def init_from_files(cls, model_base_filename):
+        # Load model metaparameters, instantiate a model with that architecture,
+        # load model weights, and set the model weights.
+        param_dict = np.load('%s.npy' % (model_base_filename)).item()
+        net = cls(**param_dict)
+        # if b_use_cuda:
+        #     net = net.cuda()
+        net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        return net
 
     def forward(self, x):
         # Definition: A "bank" of neurons is a group of neurons that are not connected to 
@@ -163,19 +177,6 @@ class RouteNet(nn.Module):
 
         return output, prob_open_gate
 
-        # p = 0.0
-        # x = x.view(-1, 784)
-        # act_fc1 = F.relu(self.fc1(x))
-        # act_fc1 = F.dropout(act_fc1, p=p, training=self.training)
-        # act_fc2 = F.relu(self.fc2(act_fc1))
-        # act_fc2 = F.dropout(act_fc2, p=p, training=self.training)
-        # act_fc3 = F.relu(self.fc3(act_fc2))
-        # act_fc3 = F.dropout(act_fc3, p=p, training=self.training)
-        # act_fc4 = self.fc4(act_fc3)
-        # return torch.sqrt(act_fc1), torch.sqrt(act_fc2), torch.sqrt(act_fc3), F.log_softmax(act_fc4, dim=1)
-        # # return act_fc1, act_fc2, act_fc3, F.log_softmax(act_fc4, dim=1)
-
-
     def forward_softgate(self, x):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
@@ -215,9 +216,9 @@ class RouteNet(nn.Module):
                 gate_act = getattr(self, module_name)(dropout_act)
                 
                 ## Apply hard sigmoid, RELU, or similar
-                gate_act = F.relu(gate_act)
+                # gate_act = F.relu(gate_act)
                 # gate_act = F.sigmoid(gate_act)
-                # gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
                 total_gate_act += gate_act
                 # TODO: Add activations to total activation energy?
 
@@ -255,4 +256,16 @@ class RouteNet(nn.Module):
         # TODO: Add output activations to total activation energy?
 
         return output, total_gate_act, prob_open_gate, gate_status
+
+    def save_model(self, model_base_filename):
+        param_dict = {
+            'n_input_neurons':self.n_input_neurons,
+            'idx_input_banks':self.idx_input_banks,
+            'bank_conn':self.bank_conn,
+            'idx_output_banks':self.idx_output_banks,
+            'n_output_neurons':self.n_output_neurons,
+            'n_neurons_per_hidd_bank':self.n_neurons_per_hidd_bank
+        }
+        torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
+        np.save('%s.npy' % (model_base_filename), param_dict)
 

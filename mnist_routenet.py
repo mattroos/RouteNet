@@ -14,7 +14,6 @@ import sys
 import ConfigParser
 import matplotlib.pyplot as plt
 
-# from routenet import RouteNet as RN
 import routenet as rn
 
 plt.ion()
@@ -27,6 +26,7 @@ plt.ion()
 #       activation and increase with each epoch.
 # TODO: Add activation loss. All activations or just gates?
 
+# IDEA: Add loss based on distance between neurons (wiring cost). Helpful in neuromimetic processor (keep processing local)?
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
 # IDEA: Accompanying mechanisms to modulate learning?
 
@@ -34,8 +34,11 @@ plt.ion()
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
 configParser.readfp(open(r'config.txt'))
-dirMnistData = configParser.get('Data Directories', 'dirMnistData')
 
+data_section = 'Data Directories'
+dirMnistData = configParser.get(data_section, 'dirMnistData')
+fullRootFilenameSoftModel = configParser.get(data_section, 'fullRootFilenameSoftModel')
+fullRootFilenameHardModel = configParser.get(data_section, 'fullRootFilenameHardModel')
 
 ## Get training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -210,14 +213,25 @@ def test_softgate():
         data, target = Variable(data, volatile=True), Variable(target)
         output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data)
 
+        # Store target labels and gate status for all samples
+        if cnt==0:
+            gates_all = gate_status
+            targets_all = target.data.cpu().numpy()
+        else:
+            gates_all = np.append(gates_all, gate_status, axis=0)
+            targets_all = np.append(targets_all, target.data.cpu().numpy(), axis=0)
+
+        # Accumulate losses, etc.
         test_loss_nll += F.nll_loss(output, target, size_average=True).data[0] # sum up batch loss
         test_loss_gate += torch.mean(total_gate_act).data[0]
         test_loss = lambda_nll*loss_nll + lambda_gate*loss_gate
         test_prob_open_gate += prob_open_gate
-        cnt += 1
 
+        # Compute accuracy and accumulate
         pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
         correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+
+        cnt += 1
 
     test_loss_nll /= len(test_loader.dataset)
     test_loss_gate /= len(test_loader.dataset)
@@ -227,7 +241,7 @@ def test_softgate():
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
-    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gate_status
+    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
 
 
 ## Set up DataLoaders
@@ -248,30 +262,53 @@ test_loader = torch.utils.data.DataLoader(
 
 
 ## Instantiate network model
-banks_per_layer = np.asarray([10, 10, 10, 10])
+banks_per_layer = np.asarray([10, 10])
 bank_conn = rn.make_conn_matrix(banks_per_layer)
-model = rn.RouteNet(n_input_neurons=784, \
-                 idx_input_banks=np.arange(banks_per_layer[0]), \
-                 bank_conn=bank_conn, \
-                 idx_output_banks=np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ), \
-                 n_output_neurons=10, \
-                 n_neurons_per_hidd_bank=5)
+param_dict = {'n_input_neurons':784,
+             'idx_input_banks':np.arange(banks_per_layer[0]),
+             'bank_conn':bank_conn,
+             'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
+             'n_output_neurons':10,
+             'n_neurons_per_hidd_bank':5,
+            }
+model = rn.RouteNet(**param_dict)
+# model = rn.RouteNet(n_input_neurons=784, \
+#                  idx_input_banks=np.arange(banks_per_layer[0]), \
+#                  bank_conn=bank_conn, \
+#                  idx_output_banks=np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ), \
+#                  n_output_neurons=10, \
+#                  n_neurons_per_hidd_bank=5)
 if args.cuda:
     model.cuda()
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
 
-## Run it
+## Train it, get results on test set, and save the model
 loss_total = np.zeros(args.epochs)
 loss_nll = np.zeros(args.epochs)
 loss_gate = np.zeros(args.epochs)
 prob_open_gate = np.zeros(args.epochs)
 acc = np.zeros(args.epochs)
 t_start = time.time()
+loss_nll_best = np.Inf
+loss_nll_best_epoch = 0
 for epoch in range(0, args.epochs):
+    # Train and test
     train_softgate(epoch+1)
-    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status = test_softgate()
+    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+
+    # Save model architecture and params, if it's the best so far on the test set
+    if loss_nll[epoch] < loss_nll_best:
+        loss_nll_best_epoch = epoch
+        loss_nll_best = loss_nll[epoch]
+        model.save_model(fullRootFilenameSoftModel)
+
+    # DELETE ME: Make sure we can reload mode
+    model = rn.RouteNet.init_from_files(fullRootFilenameSoftModel)
+    if args.cuda:
+        model.cuda()
+
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
@@ -329,6 +366,47 @@ plt.plot(100*prob_open_gate, 'o-')
 plt.title('Test set: Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
+
+
+## Plot the fraction of open gates, grouped by target labels
+targets_unique = np.sort(np.unique(target))
+plt.figure(fn)
+fn = fn + 1
+plt.clf()
+for i, targ in enumerate(targets_unique):
+    idx = np.where(target==targ)[0]
+    mn = np.mean(gate_status[idx,:,:], axis=0)
+    plt.subplot(3,4,i+1)
+    plt.imshow(mn)
+    plt.clim(0,1)
+    plt.title(targ)
+
+## Plot the fraction of open gates in connectivity map,
+## grouped by target labels.
+print('Plotting connectivity maps. This may take a minute...')
+targets_unique = np.sort(np.unique(target))
+plt.figure(fn)
+fn = fn + 1
+plt.clf()
+layer_num = np.zeros((0))
+node_num = np.zeros((0))
+for i_layer in range(len(banks_per_layer)):
+    layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer+1))
+    node_num = np.append(node_num, np.arange(banks_per_layer[i_layer])+1)
+for i, targ in enumerate(targets_unique):
+    idx = np.where(target==targ)[0]
+    mn = np.mean(gate_status[idx,:,:], axis=0)
+    plt.subplot(3,4,i+1)
+    plt.scatter(layer_num, node_num, s=10, facecolors='none', edgecolors='k')
+    for i_source in range(np.sum(banks_per_layer)):
+        for i_target in range(np.sum(banks_per_layer)):
+            alpha = mn[i_source, i_target]
+            plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+    plt.title(targ)
+    frame1 = plt.gca()
+    frame1.axes.get_xaxis().set_visible(False)
+    frame1.axes.get_yaxis().set_visible(False)
+print('Done.')
 
 sys.exit()
 
