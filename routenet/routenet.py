@@ -73,12 +73,13 @@ class RouteNet(nn.Module):
         # Create the connections between inputs and banks that receive inputs
         for i_input_bank in idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
+            # TODO: Should layers between inputs and receiving banks have no bias?
             setattr(self, module_name, nn.Linear(n_input_neurons, n_neurons_per_hidd_bank))
 
         # Create the connections between output banks and network output layer
         for i_output_bank in idx_output_banks:
             module_name = 'b%0.2d_output_data' % (i_output_bank)
-            setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons))
+            setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons, bias=False))
 
     @classmethod
     def init_from_files(cls, model_base_filename):
@@ -91,7 +92,7 @@ class RouteNet(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward(self, x):
+    def forward_hardgate(self, x):
         # Definition: A "bank" of neurons is a group of neurons that are not connected to 
         # each other. If two banks are connected, they are fully connected. Inputs to a bank
         # from others banks may be gated on/off in bank-wise fashion. E.g., if Set_i has
@@ -115,8 +116,11 @@ class RouteNet(nn.Module):
         bank_data_acts = np.full(self.n_hidd_banks, None)
         n_open_gates = 0
         prob_open_gate = None
+        total_gate_act = None
 
         x = x.view(-1, 784)
+        
+        gate_status = np.full(self.bank_conn.shape, False)
 
         # Update activations of all the input banks. These are not gated.
         for i_input_bank in self.idx_input_banks:
@@ -138,20 +142,45 @@ class RouteNet(nn.Module):
             # gate is open.
             for i_source in idx_source:
                 if bank_data_acts[i_source] is not None:
+                    # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
+                    # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
+                    module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
+                    dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
                     module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                    gate_act = getattr(self, module_name)(bank_data_acts[i_source])
+                    gate_act = getattr(self, module_name)(dropout_act)
                     # TODO: Add activations to total activation energy?
-                    # TODO: Add gate activations to total gate activation energy.
-                    # TODO: Apply hard sigmoid and roll the dice to see if gate is open or closed
-                    # Just using above or below zero for now....
+
+                    ## Apply hard sigmoid, RELU, or similar
+                    # gate_act = F.relu(gate_act)
+                    # gate_act = F.sigmoid(gate_act)
+                    gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+
+                    if total_gate_act is None:
+                        total_gate_act = gate_act
+                    else:
+                        total_gate_act += gate_act
+
                     if gate_act.data[0,0] > 0:
+                        gate_status[i_source, i_target] = True
                         n_open_gates += 1
+                        # module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
+                        # data_act = getattr(self, module_name)(bank_data_acts[i_source])
+                        module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
+                        dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
                         module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                        data_act = getattr(self, module_name)(bank_data_acts[i_source])
+                        data_act = getattr(self, module_name)(dropout_act)
+
+                        # Could we train in a way such that gate activations
+                        # are nearly always 0 or 1, so we don't have to multiply
+                        # them by the data activations, as in the soft-gating
+                        # case? Probabilistic activation?
                         if bank_data_acts[i_target] is None:
-                            bank_data_acts[i_target] = data_act
+                            # Some bug here. Can't multiply by gate_act and also to backprop (loss.backward())
+                            bank_data_acts[i_target] = gate_act * data_act
+                            # bank_data_acts[i_target] = data_act
                         else:
-                            bank_data_acts[i_target] += data_act
+                            bank_data_acts[i_target] += gate_act * data_act
+
             if bank_data_acts[i_target] is not None:
                 bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
                 # TODO: Add activations to total activation energy?
@@ -159,8 +188,9 @@ class RouteNet(nn.Module):
         # Update activations output layer. The output 'bank' is not gated, but it may
         # not have any active inputs, so have to check for that.
         output = None
+        prob_open_gate = n_open_gates / float(self.n_bank_conn)
         if np.all(bank_data_acts[self.idx_output_banks]==None):
-            return output, prob_open_gate
+            return output, total_gate_act, prob_open_gate, gate_status
         for i_output_bank in self.idx_output_banks:
             if bank_data_acts[i_output_bank] is not None:
                 module_name = 'b%0.2d_output_data' % (i_output_bank)
@@ -172,10 +202,9 @@ class RouteNet(nn.Module):
 
         if output is not None:
             output = F.log_softmax(output, dim=1)
-            prob_open_gate = n_open_gates / float(self.n_bank_conn)
         # TODO: Add output activations to total activation energy?
 
-        return output, prob_open_gate
+        return output, total_gate_act, prob_open_gate, gate_status
 
     def forward_softgate(self, x):
         # Unlike the main forward() method, this one uses soft gates thus
@@ -245,12 +274,17 @@ class RouteNet(nn.Module):
         # Update activations of the output layer. The output banks are not gated.
         for i_output_bank in self.idx_output_banks:
             module_name = 'b%0.2d_output_data' % (i_output_bank)
+            # Part of BUG is here/below. If output layers have bias, then even if
+            # input is zero, they may have non-zero output, unlike for the
+            # hard gate model.
             data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
             if output is None:
                 output = data_act
             else:
                 output += data_act
 
+        # Second part of BUG is this softmax.  If output is all zeros, this turns
+        # it into a uniform distribution.
         output = F.log_softmax(output, dim=1)
         prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
         # TODO: Add output activations to total activation energy?
@@ -258,6 +292,9 @@ class RouteNet(nn.Module):
         return output, total_gate_act, prob_open_gate, gate_status
 
     def save_model(self, model_base_filename):
+        # Just saving the model, not the optimizer state. To stop and 
+        # resume training, optimizer state needs to be saved as well.
+        # https://discuss.pytorch.org/t/saving-and-loading-a-model-in-pytorch/2610
         param_dict = {
             'n_input_neurons':self.n_input_neurons,
             'idx_input_banks':self.idx_input_banks,

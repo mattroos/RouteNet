@@ -18,7 +18,6 @@ import routenet as rn
 
 plt.ion()
 
-# TODO: Code for model saving and loading
 # TODO: Probabilistic gating.
 # TODO: Pretrain with soft gating so batches can be used. And then
 #       do additional training with hard, probabilistic gates.
@@ -61,7 +60,12 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
 parser.add_argument('--lambda-nll', type=float, default=1.0, metavar='N',
                     help='weighting on nll loss. weight on gate activation loss is 1-lambda_nll.')
 args = parser.parse_args()
+
 args.cuda = not args.no_cuda and torch.cuda.is_available()
+if args.cuda:
+    print('Using CUDA.')
+else:
+    print('Not using CUDA.')
 
 lambda_nll = args.lambda_nll
 lambda_gate = 1 - args.lambda_nll
@@ -72,7 +76,7 @@ if args.cuda:
 
 
 ## Define training and testing functions
-def train(epoch):
+def train_hardgate(epoch):
     model.train()
     loss_sum = 0.0
     prob_open_gate_sum = 0.0
@@ -86,12 +90,14 @@ def train(epoch):
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
-        # act_fc1, act_fc2, act_fc3, output = model(data)
-        # output, prob_open_gate = model(data)
-        output, total_gate_act, prob_open_gate = model.forward(data)
+        try:
+            output, total_gate_act, prob_open_gate, _ = model.forward_hardgate(data)
+        except:
+            print('Error Here.')
+
 
         if output is not None:
-            loss_nll = F.nll_loss(output, target, test)
+            loss_nll = F.nll_loss(output, target)
             loss_gate = torch.mean(total_gate_act)
             loss = lambda_nll*loss_nll + lambda_gate*loss_gate
 
@@ -105,7 +111,7 @@ def train(epoch):
 
             loss_sum = loss_sum + loss.data.cpu().numpy()[0]
             prob_open_gate_sum += prob_open_gate
-            cnt += args.batch_size
+            cnt += 1
 
             loss_nll_train_hist = np.append(loss_nll_train_hist, loss_nll.data.cpu().numpy()[0])
             loss_gate_train_hist = np.append(loss_gate_train_hist, loss_gate.data.cpu().numpy()[0])
@@ -136,11 +142,9 @@ def train_softgate(epoch):
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
-        # act_fc1, act_fc2, act_fc3, output = model(data)
-        # output, prob_open_gate = model(data)
         output, total_gate_act, prob_open_gate, _ = model.forward_softgate(data)
 
-        loss_nll = F.nll_loss(output, target, size_average=True)
+        loss_nll = F.nll_loss(output, target)
         loss_gate = torch.mean(total_gate_act)
         loss = lambda_nll*loss_nll + lambda_gate*loss_gate
 
@@ -166,39 +170,52 @@ def train_softgate(epoch):
     # return loss_sum/cnt
     return loss_total_train_hist, loss_nll_train_hist, loss_gate_train_hist
 
-def test():
+def test_hardgate():
     model.eval()
     test_loss_nll = 0
-    test_loss_act = 0
+    test_loss_gate = 0
+    test_prob_open_gate = 0
     correct = 0
     cnt = 0
     for data, target in test_loader:
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
-        #act_fc1, act_fc2, act_fc3, output = model(data)
-        # output, _ = model(data)
-        output, _ = model.forward_softgate(data)
+        output, total_gate_act, prob_open_gate, gate_status = model.forward_hardgate(data)
+
+        # Store target labels and gate status for all samples
+        if cnt==0:
+            gates_all = gate_status
+            targets_all = target.data.cpu().numpy()
+        else:
+            gates_all = np.append(gates_all, gate_status, axis=0)
+            targets_all = np.append(targets_all, target.data.cpu().numpy(), axis=0)
 
         if output is not None:
-            test_loss_nll += F.nll_loss(output, target, size_average=False).data[0] # sum up batch loss
-            # test_loss_gate += torch.mean(total_gate_act)
-            # test_loss_act = (torch.mean(act_fc3) + torch.mean(act_fc2) + torch.mean(act_fc1)).data[0]
-            # test_loss_act = (torch.mean(act_fc3) + torch.mean(act_fc2)).data[0]
-            test_loss = test_loss_nll
+            # Accumulate losses, etc.
+            test_loss_nll += F.nll_loss(output, target).data[0] # sum up batch loss
+            test_loss_gate += torch.mean(total_gate_act).data[0]
+            test_loss = lambda_nll*loss_nll + lambda_gate*loss_gate
+            test_prob_open_gate += prob_open_gate
 
+            # Compute accuracy and accumulate
             pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
             correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
-            cnt += args.test_batch_size
 
-    # test_loss_nll /= len(test_loader.dataset)
-    # test_loss_act /= len(test_loader.dataset)
-    # test_loss = lambda_nll * test_loss_nll + lambda_act * test_loss_act
-    test_loss_nll /= cnt
+            if cnt%100 == 0:
+                print(cnt)
+            cnt += 1
+
+    test_loss_nll /= len(test_loader.dataset)
+    test_loss_gate /= len(test_loader.dataset)
+    test_prob_open_gate /= cnt
+    test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
+    acc = 100. * correct / len(test_loader.dataset)
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
-    return test_loss_nll, test_loss_act
+    # return test_loss_nll, test_loss_act
+    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
 
 def test_softgate():
     model.eval()
@@ -231,6 +248,8 @@ def test_softgate():
         pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
         correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
 
+        if cnt % 100 == 0:
+            print(cnt)
         cnt += 1
 
     test_loss_nll /= len(test_loader.dataset)
@@ -238,10 +257,38 @@ def test_softgate():
     test_prob_open_gate /= cnt
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
     acc = 100. * correct / len(test_loader.dataset)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
     return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
+
+
+def test_compare():
+    model.eval()
+    test_loss_nll = 0
+    test_loss_gate = 0
+    test_prob_open_gate = 0
+    correct = 0
+    cnt = 0
+    for data, target in test_loader:
+        e12 = None
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
+        output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data)
+        output2, total_gate_act2, prob_open_gate2, gate_status2 = model.forward_hardgate(data)
+
+        try:
+            e12 = np.array_equal(output1.data.cpu().numpy(), output2.data.cpu().numpy())
+        except:
+            output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data)
+            output2, total_gate_act2, prob_open_gate2, gate_status2 = model.forward_hardgate(data)
+        if not e12 and e12 is not None:
+            print('Not equal on cnt %d' % (cnt))
+
+        if cnt % 100 == 0:
+            print(cnt)
+        cnt += 1
 
 
 ## Set up DataLoaders
@@ -262,7 +309,7 @@ test_loader = torch.utils.data.DataLoader(
 
 
 ## Instantiate network model
-banks_per_layer = np.asarray([10, 10])
+banks_per_layer = np.asarray([1, 1])
 bank_conn = rn.make_conn_matrix(banks_per_layer)
 param_dict = {'n_input_neurons':784,
              'idx_input_banks':np.arange(banks_per_layer[0]),
@@ -272,12 +319,6 @@ param_dict = {'n_input_neurons':784,
              'n_neurons_per_hidd_bank':5,
             }
 model = rn.RouteNet(**param_dict)
-# model = rn.RouteNet(n_input_neurons=784, \
-#                  idx_input_banks=np.arange(banks_per_layer[0]), \
-#                  bank_conn=bank_conn, \
-#                  idx_output_banks=np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ), \
-#                  n_output_neurons=10, \
-#                  n_neurons_per_hidd_bank=5)
 if args.cuda:
     model.cuda()
 
@@ -303,20 +344,76 @@ for epoch in range(0, args.epochs):
         loss_nll_best_epoch = epoch
         loss_nll_best = loss_nll[epoch]
         model.save_model(fullRootFilenameSoftModel)
-
-    # DELETE ME: Make sure we can reload mode
-    model = rn.RouteNet.init_from_files(fullRootFilenameSoftModel)
-    if args.cuda:
-        model.cuda()
-
+        print('Best test set accuracy. Saving model.\n')
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
+
 #=======================================
 # TODO: Fine-tune using hard gating...
 #=======================================
+print('\nFINE-TUNING WITH HARD GATING...\n')
+
+## Set up DataLoaders using batch size of 1
+kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST(dirMnistData, train=True, download=True,
+                   transform=transforms.Compose([
+                       transforms.ToTensor(),
+                       transforms.Normalize((0.1307,), (0.3081,))
+                   ])),
+    batch_size=1, shuffle=True, **kwargs)
+test_loader = torch.utils.data.DataLoader(
+    datasets.MNIST(dirMnistData, train=False, transform=transforms.Compose([
+                       transforms.ToTensor(),
+                       transforms.Normalize((0.1307,), (0.3081,))
+                   ])),
+    batch_size=1, shuffle=True, **kwargs)
+
+## On test set, compare timing and results of full soft gates and hard gates (not really hard gates, but rather dynamically routed)
+test_compare()
+loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_hardgate()
+sys.exit()
+
+# Create new optimizer
+optimizer = optim.SGD(model.parameters(), lr=args.lr/10, momentum=args.momentum)
+
+## Train it, get results on test set, and save the model
+loss_total = np.zeros(args.epochs)
+loss_nll = np.zeros(args.epochs)
+loss_gate = np.zeros(args.epochs)
+prob_open_gate = np.zeros(args.epochs)
+acc = np.zeros(args.epochs)
+t_start = time.time()
+loss_nll_best = np.Inf
+loss_nll_best_epoch = 0
+
+# # Adjust the NLL/gate loss weighting
+# lambda_nll = 1.0
+# lambda_gate = 1 - lambda_nll
+
+for epoch in range(0, args.epochs):
+    # Train and test
+    train_hardgate(epoch+1)
+    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+
+    # Save model architecture and params, if it's the best so far on the test set
+    if loss_nll[epoch] < loss_nll_best:
+        loss_nll_best_epoch = epoch
+        loss_nll_best = loss_nll[epoch]
+        model.save_model(fullRootFilenameHardModel)
+        print('Best test set accuracy. Saving model.\n')
+
+dur = time.time()-t_start
+print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
+
+
+sys.exit()
+
+
 
 
 fn = 1
@@ -409,6 +506,12 @@ for i, targ in enumerate(targets_unique):
 print('Done.')
 
 sys.exit()
+
+weights2 = []
+grads2 = []
+for param in model2.parameters():
+    weights2.append(param.data)
+    grads2.append(param.grad)
 
 ## Plot the weights
 weights = []
