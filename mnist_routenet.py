@@ -35,6 +35,7 @@ plt.ion()
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
 # IDEA: Accompanying mechanisms to modulate learning?
 
+data_set = 'cifar10'  # 'mnist' or 'cifar10'
 
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
@@ -42,6 +43,7 @@ configParser.readfp(open(r'config.txt'))
 
 data_section = 'Data Directories'
 dirMnistData = configParser.get(data_section, 'dirMnistData')
+dirCifar10Data = configParser.get(data_section, 'dirCifar10Data')
 fullRootFilenameSoftModel = configParser.get(data_section, 'fullRootFilenameSoftModel')
 fullRootFilenameHardModel = configParser.get(data_section, 'fullRootFilenameHardModel')
 
@@ -310,27 +312,53 @@ def test_softgate():
 #             print(cnt)
 #         cnt += 1
 
+
 ## Set up DataLoaders
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST(dirMnistData, train=True, download=True,
-                   transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST(dirMnistData, train=False, transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
+if data_set == 'cifar10':
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    f_datasets = datasets.CIFAR10
+    dir_dataset = dirCifar10Data
+    n_input_neurons = 3 * 32 * 32
+elif data_set == 'mnist':
+    transform=transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))])
+    f_datasets = datasets.MNIST
+    dir_dataset = dirMnistData
+    n_input_neurons = 28 * 28
+else:
+    print('Unknown dataset.')
+    sys.exit()
+
+kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+
+train_loader = torch.utils.data.DataLoader(
+                    f_datasets(dir_dataset,
+                                train = True,
+                                download = False,
+                                transform = transform
+                                ),
+                    batch_size = args.test_batch_size,
+                    shuffle = False,
+                    **kwargs)
+test_loader = torch.utils.data.DataLoader(
+                    f_datasets(dir_dataset,
+                                train = False,
+                                download = False,
+                                transform = transform
+                                ),
+                    batch_size = args.test_batch_size,
+                    shuffle = False,
+                    **kwargs)
 
 ## Instantiate network model
 banks_per_layer = np.asarray([10, 10])
 bank_conn = rn.make_conn_matrix(banks_per_layer)
-param_dict = {'n_input_neurons':784,
+param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
              'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),

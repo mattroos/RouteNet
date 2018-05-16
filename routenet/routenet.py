@@ -117,7 +117,8 @@ class RouteNet(nn.Module):
         n_open_gates = 0
         total_gate_act = None
 
-        x = x.view(-1, 784)
+        batch_size = x.size()[0]
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
         
         if return_gate_status:
             gate_status = np.full(self.bank_conn.shape, False)
@@ -221,8 +222,8 @@ class RouteNet(nn.Module):
     #     output = None
     #     total_gate_act = 0
 
-    #     x = x.view(-1, 784)
-    #     batch_size = len(x)
+        # batch_size = x.size()[0]
+        # x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
 
     #     gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
 
@@ -303,8 +304,8 @@ class RouteNet(nn.Module):
         output = None
         total_gate_act = 0
 
-        x = x.view(-1, 784)
-        batch_size = len(x)
+        batch_size = x.size()[0]
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
