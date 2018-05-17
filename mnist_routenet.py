@@ -134,25 +134,30 @@ def train_hardgate(epoch):
     return loss_total_train_hist, loss_nll_train_hist, loss_gate_train_hist
 
 def train_softgate(epoch):
+    return_gate_status = True
+
     model.train()
-    loss_sum = 0.0
-    prob_open_gate_sum = 0.0
+
     cnt = 0
-    loss_nll_train_hist = np.asarray([])
-    loss_gate_train_hist = np.asarray([])
-    loss_total_train_hist = np.asarray([])
+    loss_sum = 0.0
+    loss_gate_sum = 0.0
+    loss_nll_sum = 0.0
+    prob_open_gate_sum = 0.0
+    correct = 0
+
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
-        # output, total_gate_act, prob_open_gate = model.forward_softgate(data)
-        output, total_gate_act = model.forward_softgate(data)
-        prob_open_gate = 0
+        if return_gate_status:
+            output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data, return_gate_status=return_gate_status)
+        else:
+            output, total_gate_act = model.forward_softgate(data)
+            prob_open_gate = np.nan
 
-        # loss_nll = F.nll_loss(output, target) # Use if log_softmax *is* applied in model's forward method
-        loss_nll = F.cross_entropy(output, target)  # Use if log_softmax *is not* applied in model's forward method
+        loss_nll = F.cross_entropy(output, target)  # cross_entropy is log_softmax + negative log likelihood
         loss_gate = torch.mean(total_gate_act)
         loss = lambda_nll*loss_nll + lambda_gate*loss_gate
 
@@ -160,23 +165,32 @@ def train_softgate(epoch):
         optimizer.step()
 
         loss_sum += loss.data.cpu().numpy()[0]
+        loss_gate_sum += loss_gate.data.cpu().numpy()[0]
+        loss_nll_sum += loss_nll.data.cpu().numpy()[0]
         prob_open_gate_sum += prob_open_gate
+
+        # Compute accuracy and accumulate
+        pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+        correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+
         cnt += 1
 
-        loss_nll_train_hist = np.append(loss_nll_train_hist, loss_nll.data.cpu().numpy()[0])
-        loss_gate_train_hist = np.append(loss_gate_train_hist, loss_gate.data.cpu().numpy()[0])
-        loss_total_train_hist = np.append(loss_total_train_hist, loss.data.cpu().numpy()[0])
-
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%), Loss: {:.6f}\tProb open gate: {:.6f}\t{:.2f} seconds'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                # 100. * batch_idx / len(train_loader), loss.data[0]))
-                100. * batch_idx / len(train_loader), loss_sum/cnt, prob_open_gate_sum/cnt, time.time()-t_start))
-            loss_sum = 0.0
-            prob_open_gate_sum = 0.0
+            acc = (100. * correct) / (cnt*args.batch_size)
+            print('Train Epoch: {} [{:05d}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
+                epoch, (batch_idx+1)*len(data), len(train_loader.dataset),
+                100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
             cnt = 0
-    # return loss_sum/cnt
-    return loss_total_train_hist, loss_nll_train_hist, loss_gate_train_hist
+            loss_sum = 0.0
+            loss_gate_sum = 0.0
+            prob_open_gate_sum = 0.0
+            correct = 0.0
+
+    acc = (100. * correct) / (cnt*args.batch_size)
+    print('Train Epoch: {} [{}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
+        epoch, (batch_idx+1)*len(data), len(train_loader.dataset),
+        100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
+    return loss_sum/cnt, loss_nll_sum/cnt, loss_gate_sum/cnt, prob_open_gate/cnt, acc
 
 def test_hardgate_speed():
     # Just get NN output. No other processing. To assess speed.
@@ -218,7 +232,7 @@ def test_hardgate():
             test_prob_open_gate += prob_open_gate
 
             # Compute accuracy and accumulate
-            pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            pred = output.data.max(1, keepdim=True)[1] # get the index of the max output
             correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
 
             if cnt%1000 == 0:
@@ -248,6 +262,7 @@ def test_softgate_speed():
     return time.time() - t_start
 
 def test_softgate():
+    # TODO: Match to train_softgate. Don't get/report gate_status/prob in train, but do it in test.
     model.eval()
     test_loss_nll = 0
     test_loss_gate = 0
@@ -280,8 +295,10 @@ def test_softgate():
 
         cnt += 1
         
-    test_loss_nll /= len(test_loader.dataset)
-    test_loss_gate /= len(test_loader.dataset)
+    # test_loss_nll /= len(test_loader.dataset)
+    # test_loss_gate /= len(test_loader.dataset)
+    test_loss_nll /= cnt
+    test_loss_gate /= cnt
     test_prob_open_gate /= cnt
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
     acc = 100. * correct / len(test_loader.dataset)
@@ -356,14 +373,14 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-banks_per_layer = np.asarray([10, 10])
+banks_per_layer = np.asarray([10, 10, 10])
 bank_conn = rn.make_conn_matrix(banks_per_layer)
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
              'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
              'n_output_neurons':10,
-             'n_neurons_per_hidd_bank':5,
+             'n_neurons_per_hidd_bank':20,
             }
 model = rn.RouteNet(**param_dict)
 if args.cuda:
@@ -373,23 +390,31 @@ optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
 
 ## Train it, get results on test set, and save the model
-loss_total = np.zeros(args.epochs)
-loss_nll = np.zeros(args.epochs)
-loss_gate = np.zeros(args.epochs)
-prob_open_gate = np.zeros(args.epochs)
-acc = np.zeros(args.epochs)
+loss_total_train = np.zeros(args.epochs)
+loss_nll_train = np.zeros(args.epochs)
+loss_gate_train = np.zeros(args.epochs)
+prob_open_gate_train = np.zeros(args.epochs)
+acc_train = np.zeros(args.epochs)
+
+loss_total_test = np.zeros(args.epochs)
+loss_nll_test = np.zeros(args.epochs)
+loss_gate_test = np.zeros(args.epochs)
+prob_open_gate_test = np.zeros(args.epochs)
+acc_test = np.zeros(args.epochs)
+
 t_start = time.time()
 loss_nll_best = np.Inf
 loss_nll_best_epoch = 0
-for epoch in range(0, args.epochs):
+
+for ep in range(0, args.epochs):
     # Train and test
-    train_softgate(epoch+1)
-    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+    loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
-    if loss_nll[epoch] < loss_nll_best:
-        loss_nll_best_epoch = epoch
-        loss_nll_best = loss_nll[epoch]
+    if loss_nll_test[ep] < loss_nll_best:
+        loss_nll_best_epoch = ep
+        loss_nll_best = loss_nll_test[ep]
         model.save_model(fullRootFilenameSoftModel)
         print('Best test set accuracy. Saving model.\n')
 
@@ -398,84 +423,82 @@ print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
 
-#=======================================
-# TODO: Fine-tune using hard gating...
-#=======================================
-print('\nFINE-TUNING WITH HARD GATING...\n')
+# #=======================================
+# # TODO: Fine-tune using hard gating...
+# #=======================================
+# print('\nFINE-TUNING WITH HARD GATING...\n')
 
-## Set up DataLoaders using batch size of 1
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST(dirMnistData, train=True, download=True,
-                   transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=1, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST(dirMnistData, train=False, transform=transforms.Compose([
-                       transforms.ToTensor(),
-                       transforms.Normalize((0.1307,), (0.3081,))
-                   ])),
-    batch_size=1, shuffle=True, **kwargs)
+# ## Set up DataLoaders using batch size of 1
+# kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+# train_loader = torch.utils.data.DataLoader(
+#     datasets.MNIST(dirMnistData, train=True, download=True,
+#                    transform=transforms.Compose([
+#                        transforms.ToTensor(),
+#                        transforms.Normalize((0.1307,), (0.3081,))
+#                    ])),
+#     batch_size=1, shuffle=True, **kwargs)
+# test_loader = torch.utils.data.DataLoader(
+#     datasets.MNIST(dirMnistData, train=False, transform=transforms.Compose([
+#                        transforms.ToTensor(),
+#                        transforms.Normalize((0.1307,), (0.3081,))
+#                    ])),
+#     batch_size=1, shuffle=True, **kwargs)
 
-## Compare seed of softgate and hardgate models
-# TODO: Forward methods to don't have unnecessary overhead based on requested return items
-t_hard = test_hardgate_speed()
-print('Hardgate processing duration = %f seconds' % (t_hard))
-t_soft = test_softgate_speed()
-print('Softgate processing duration = %f seconds' % (t_soft))
+# ## Compare seed of softgate and hardgate models
+# # TODO: Forward methods to don't have unnecessary overhead based on requested return items
+# t_hard = test_hardgate_speed()
+# print('Hardgate processing duration = %f seconds' % (t_hard))
+# t_soft = test_softgate_speed()
+# print('Softgate processing duration = %f seconds' % (t_soft))
 
-sys.exit()
+# sys.exit()
 
-## On test set, compare timing and results of full soft gates and hard gates (not really hard gates, but rather dynamically routed)
-# test_compare()
-t_start = time.time()
-loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
-print('Softgate processing duration = %f seconds' % (time.time()-t_start))
+# ## On test set, compare timing and results of full soft gates and hard gates (not really hard gates, but rather dynamically routed)
+# # test_compare()
+# t_start = time.time()
+# loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+# print('Softgate processing duration = %f seconds' % (time.time()-t_start))
 
-t_start = time.time()
-loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_hardgate()
-print('Hardgate processing duration = %f seconds' % (time.time()-t_start))
+# t_start = time.time()
+# loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_hardgate()
+# print('Hardgate processing duration = %f seconds' % (time.time()-t_start))
 
-sys.exit()
+# sys.exit()
 
-# Create new optimizer
-optimizer = optim.SGD(model.parameters(), lr=args.lr/10, momentum=args.momentum)
+# # Create new optimizer
+# optimizer = optim.SGD(model.parameters(), lr=args.lr/10, momentum=args.momentum)
 
-## Train it, get results on test set, and save the model
-loss_total = np.zeros(args.epochs)
-loss_nll = np.zeros(args.epochs)
-loss_gate = np.zeros(args.epochs)
-prob_open_gate = np.zeros(args.epochs)
-acc = np.zeros(args.epochs)
-t_start = time.time()
-loss_nll_best = np.Inf
-loss_nll_best_epoch = 0
+# ## Train it, get results on test set, and save the model
+# loss_total = np.zeros(args.epochs)
+# loss_nll = np.zeros(args.epochs)
+# loss_gate = np.zeros(args.epochs)
+# prob_open_gate = np.zeros(args.epochs)
+# acc = np.zeros(args.epochs)
+# t_start = time.time()
+# loss_nll_best = np.Inf
+# loss_nll_best_epoch = 0
 
-# # Adjust the NLL/gate loss weighting
-# lambda_nll = 1.0
-# lambda_gate = 1 - lambda_nll
+# # # Adjust the NLL/gate loss weighting
+# # lambda_nll = 1.0
+# # lambda_gate = 1 - lambda_nll
 
-for epoch in range(0, args.epochs):
-    # Train and test
-    train_hardgate(epoch+1)
-    loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
+# for epoch in range(0, args.epochs):
+#     # Train and test
+#     train_hardgate(epoch+1)
+#     loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
 
-    # Save model architecture and params, if it's the best so far on the test set
-    if loss_nll[epoch] < loss_nll_best:
-        loss_nll_best_epoch = epoch
-        loss_nll_best = loss_nll[epoch]
-        model.save_model(fullRootFilenameHardModel)
-        print('Best test set accuracy. Saving model.\n')
+#     # Save model architecture and params, if it's the best so far on the test set
+#     if loss_nll[epoch] < loss_nll_best:
+#         loss_nll_best_epoch = epoch
+#         loss_nll_best = loss_nll[epoch]
+#         model.save_model(fullRootFilenameHardModel)
+#         print('Best test set accuracy. Saving model.\n')
 
-dur = time.time()-t_start
-print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
-
-
-sys.exit()
+# dur = time.time()-t_start
+# print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
+# sys.exit()
 
 
 fn = 1
@@ -493,38 +516,50 @@ i_subplot = 1
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-f_plot(loss_nll,'bo-')
-plt.title('Test set: NLL loss')
+f_plot(loss_nll_train, 'o-')
+f_plot(loss_nll_test,'o-')
+plt.legend(('Train','Test'))
+plt.title('NLL loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-f_plot(loss_gate, 'o-')
-plt.title('Test set: Activation loss')
+f_plot(loss_gate_train, 'o-')
+f_plot(loss_gate_test, 'o-')
+plt.legend(('Train','Test'))
+plt.title('Activation loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-f_plot(loss_total, 'o-')
-plt.title('Test set: Total loss')
+f_plot(loss_total_train, 'o-')
+f_plot(loss_total_test, 'o-')
+plt.legend(('Train','Test'))
+plt.title('Total loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-plt.plot(acc, 'o-')
-plt.title('Test set: Classification accuracy')
+plt.plot(acc_train, 'o-')
+plt.plot(acc_test, 'o-')
+plt.legend(('Train','Test'))
+plt.title('Classification accuracy')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-plt.plot(100*prob_open_gate, 'o-')
-plt.title('Test set: Percentage of gates open')
+plt.plot(100*prob_open_gate_train, 'o-')
+plt.plot(100*prob_open_gate_test, 'o-')
+plt.legend(('Train','Test'))
+plt.title('Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
+
+sys.exit()
 
 
 ## Plot the fraction of open gates, grouped by target labels
@@ -560,7 +595,8 @@ for i, targ in enumerate(targets_unique):
     for i_source in range(np.sum(banks_per_layer)):
         for i_target in range(np.sum(banks_per_layer)):
             alpha = mn[i_source, i_target]
-            plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+            if alpha > 0.0:
+                plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
     plt.title(targ)
     frame1 = plt.gca()
     frame1.axes.get_xaxis().set_visible(False)

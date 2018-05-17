@@ -49,10 +49,11 @@ class RouteNet(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.0
-        self.prob_dropout_gate = 0.0
+        self.prob_dropout_data = 0.3
+        self.prob_dropout_gate = 0.3
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
+        # Do not use a bias, so hard gating will be equivalent to soft gating.
         # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
         # Each source/target combo and each source/gate combo?
         for i_source in range(n_hidd_banks):
@@ -73,10 +74,11 @@ class RouteNet(nn.Module):
         # Create the connections between inputs and banks that receive inputs
         for i_input_bank in idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
-            # TODO: Should layers between inputs and receiving banks have no bias?
+            # TODO: Should layers between inputs and receiving banks have a bias or not?
             setattr(self, module_name, nn.Linear(n_input_neurons, n_neurons_per_hidd_bank))
 
-        # Create the connections between output banks and network output layer
+        # Create the connections between output banks and network output layer.
+        # Do not use a bias, so hard gating will be equivalent to soft gating.
         for i_output_bank in idx_output_banks:
             module_name = 'b%0.2d_output_data' % (i_output_bank)
             setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons, bias=False))
@@ -127,7 +129,6 @@ class RouteNet(nn.Module):
         for i_input_bank in self.idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
             bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
-            # TODO: Add activations to total activation energy?
 
         # Update activations of all the hidden banks. These are gated.
         for i_target in range(self.n_hidd_banks):
@@ -149,7 +150,6 @@ class RouteNet(nn.Module):
                     dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
                     module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
                     gate_act = getattr(self, module_name)(dropout_act)
-                    # TODO: Add activations to total activation energy?
 
                     ## Apply hard sigmoid, RELU, or similar
                     # gate_act = F.relu(gate_act)
@@ -185,7 +185,6 @@ class RouteNet(nn.Module):
 
             if bank_data_acts[i_target] is not None:
                 bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-                # TODO: Add activations to total activation energy?
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float(self.n_bank_conn)
@@ -203,8 +202,6 @@ class RouteNet(nn.Module):
                     output = data_act
                 else:
                     output += data_act
-
-        # TODO: Add output activations to total activation energy?
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
@@ -314,7 +311,6 @@ class RouteNet(nn.Module):
         for i_input_bank in self.idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
             bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
-            # TODO: Add activations to total activation energy?
 
         # Update activations of all the hidden banks. These are soft gated.
         for i_target in range(self.n_hidd_banks):
@@ -331,13 +327,11 @@ class RouteNet(nn.Module):
                 module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
                 gate_act = getattr(self, module_name)(dropout_act)
                 
-                ## Apply hard sigmoid, RELU, or similar
+                ## Apply hard sigmoid or RELU
                 # gate_act = F.relu(gate_act)
-                # gate_act = F.sigmoid(gate_act)
                 gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
                 total_gate_act += gate_act
-                # TODO: Add activations to total activation energy?
 
                 if return_gate_status:
                     gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
@@ -357,7 +351,6 @@ class RouteNet(nn.Module):
                     bank_data_acts[i_target] += gate_act * data_act
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-            # TODO: Add activations to total activation energy?
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
@@ -365,16 +358,11 @@ class RouteNet(nn.Module):
         # Update activations of the output layer. The output banks are not gated.
         for i_output_bank in self.idx_output_banks:
             module_name = 'b%0.2d_output_data' % (i_output_bank)
-            # Part of BUG is here/below. If output layers have bias, then even if
-            # input is zero, they may have non-zero output, unlike for the
-            # hard gate model.
             data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
             if output is None:
                 output = data_act
             else:
                 output += data_act
-
-        # TODO: Add output activations to total activation energy?
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
