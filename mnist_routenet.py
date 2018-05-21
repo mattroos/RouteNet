@@ -615,8 +615,8 @@ plt.clf()
 layer_num = np.zeros((0))
 node_num = np.zeros((0))
 for i_layer in range(len(banks_per_layer)):
-    layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer+1))
-    node_num = np.append(node_num, np.arange(banks_per_layer[i_layer])+1)
+    layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer))
+    node_num = np.append(node_num, np.arange(banks_per_layer[i_layer]))
 for i, targ in enumerate(targets_unique):
     idx = np.where(target==targ)[0]
     mn = np.mean(gate_status[idx,:,:], axis=0)
@@ -629,9 +629,9 @@ for i, targ in enumerate(targets_unique):
                 # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
                 plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
     plt.title(targ)
-    frame1 = plt.gca()
-    frame1.axes.get_xaxis().set_visible(False)
-    frame1.axes.get_yaxis().set_visible(False)
+    # frame1 = plt.gca()
+    # frame1.axes.get_xaxis().set_visible(False)
+    # frame1.axes.get_yaxis().set_visible(False)
 print('Done.')
 
 
