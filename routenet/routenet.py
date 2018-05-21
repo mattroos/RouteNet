@@ -9,9 +9,12 @@ import torch.optim as optim
 from torch.autograd import Variable
 import time
 import sys
+from scipy.linalg import toeplitz
 
 
-def make_conn_matrix(banks_per_layer):
+def make_conn_matrix_ff_full(banks_per_layer):
+    # A fully-connected feed-forward network.
+    # banks_per_layer is a list or array
     n_layers = len(banks_per_layer)
     n_banks = np.sum(banks_per_layer)
     bank_conn = np.full((n_banks, n_banks), False)
@@ -24,6 +27,35 @@ def make_conn_matrix(banks_per_layer):
         bank_conn[np.meshgrid(idx_banks[i_layer], idx_banks[i_layer+1])] = True
     return bank_conn
 
+def make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out):
+    # n_banks_per_layer is a scalar.  All layers have the same number of banks.
+    # n_fan_out is the number of output banks projected to to by an input bank.
+    # Connections are spatially arranged such that the n_fan_out banks are
+    # as close as possible to the input bank (vertically, in a FF network
+    # that projects rightward in a schematic), centered at the same vertical
+    # level as the source bank.
+    
+    # Build connectivity sub-matrix and insert it into the full
+    # connectivity matrix for each pair of connected layers.
+    row = np.full(n_banks_per_layer, False)
+    col = np.full(n_banks_per_layer, False)
+    n_fan_down = n_fan_out/2
+    n_fan_up = n_fan_out - n_fan_down - 1
+    row[0:n_fan_down+1] = True
+    col[0:n_fan_up+1] = True
+    sub_conn = toeplitz(row, col)
+
+    # Get locations for submatrices
+    i_upper = np.arange(n_layers-1) * n_banks_per_layer
+    i_left = np.arange(1,n_layers) * n_banks_per_layer
+
+    # Create empty matrix and insert submatrices
+    n_banks = n_layers * n_banks_per_layer
+    bank_conn = np.full((n_banks, n_banks), False)
+    for iu, il in zip(i_upper, i_left):
+        bank_conn[iu:iu+n_banks_per_layer, il:il+n_banks_per_layer] = sub_conn
+
+    return bank_conn
 
 ## DOES IS MAKE SENSE TO USE NN MODULE? BECAUSE OF GATING, WE CAN'T USE A BATCH
 ## SIZE OF MORE THAN 1.  SO WHAT IS VALUE OF NN MODULE?
@@ -50,7 +82,7 @@ class RouteNet(nn.Module):
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
         self.prob_dropout_data = 0.3
-        self.prob_dropout_gate = 0.3
+        self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
         # Do not use a bias, so hard gating will be equivalent to soft gating.
@@ -177,10 +209,13 @@ class RouteNet(nn.Module):
                         # them by the data activations, as in the soft-gating
                         # case? Probabilistic activation?
                         if bank_data_acts[i_target] is None:
-                            # Some bug here. Can't multiply by gate_act and also to backprop (loss.backward())
+                            # TODO: If gate_act==1.0, don't need to multiply data activations by gate activation
+                            # Some bug below. Can't multiply by gate_act and also do backprop (loss.backward()).
+                            #   Don't know why.
                             bank_data_acts[i_target] = gate_act * data_act
                             # bank_data_acts[i_target] = data_act
                         else:
+                            # TODO: If gate_act==1.0, don't need to multiply data activations by gate activation
                             bank_data_acts[i_target] += gate_act * data_act
 
             if bank_data_acts[i_target] is not None:

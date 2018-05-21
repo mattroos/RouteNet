@@ -18,6 +18,19 @@ import routenet as rn
 
 plt.ion()
 
+########################################################
+# TOP PRIORITY
+# TODO: How can a layer2-3 connection be activated if no layer1-2 connections
+#       to the Layer2 bank are activated!?\
+########################################################
+
+# TODO: Use FF net with limited connectivity. Train/test with MNIST
+#       expanded to larger area, with digit in random location. Network
+#       has three outputs: Class, x-location, y-location. Do we see
+#       divergence of information as neurons get closer to the output?
+#       What if a new class is used in testing?  Does location information
+#       get routed, but ID information get gated off before hitting the
+#       classification layer/output?
 
 # TODO: Train/test on CIFAR, and mixed CIFAR-MNIST
 # TODO: On mixed CIFAR-MNIST, do we see divergence of routing paths?
@@ -35,7 +48,7 @@ plt.ion()
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
 # IDEA: Accompanying mechanisms to modulate learning?
 
-data_set = 'cifar10'  # 'mnist' or 'cifar10'
+data_set = 'mnist'  # 'mnist' or 'cifar10'
 
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
@@ -147,6 +160,10 @@ def train_softgate(epoch):
 
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
+        # # DELETE ME: Invert half of the classes
+        # ix = np.where(target>=5)[0]
+        # data[ix] = -data[ix]
+
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
@@ -270,6 +287,10 @@ def test_softgate():
     correct = 0
     cnt = 0
     for data, target in test_loader:
+        # # DELETE ME: Invert half of the classes
+        # ix = np.where(target>=5)[0]
+        # data[ix] = -data[ix]
+
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
@@ -336,17 +357,22 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 if data_set == 'cifar10':
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
     f_datasets = datasets.CIFAR10
     dir_dataset = dirCifar10Data
     n_input_neurons = 3 * 32 * 32
 elif data_set == 'mnist':
     transform=transforms.Compose([
+        # transforms.Pad(2, fill=0),  # make 32x32 instead of 28x28
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))])
+        # transforms.Normalize((0.1307,), (0.3081,)),
+        transforms.Normalize((0.5,), (0.5,)),
+        ])
     f_datasets = datasets.MNIST
     dir_dataset = dirMnistData
     n_input_neurons = 28 * 28
+    # n_input_neurons = 32 * 32
 else:
     print('Unknown dataset.')
     sys.exit()
@@ -373,14 +399,23 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-banks_per_layer = np.asarray([10, 10, 10])
-bank_conn = rn.make_conn_matrix(banks_per_layer)
+n_layers = 3
+# n_banks_per_layer = 2
+n_banks_per_layer = 15
+n_fan_out = 3
+banks_per_layer = [n_banks_per_layer] * n_layers
+# banks_per_layer = np.asarray(banks_per_layer)
+# bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
+bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
              'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
+             # 'idx_output_banks':np.arange(4,5),
+             # 'idx_output_banks':np.arange(30,40),
+             'idx_output_banks':np.arange(35,45),
              'n_output_neurons':10,
-             'n_neurons_per_hidd_bank':20,
+             'n_neurons_per_hidd_bank':5,
             }
 model = rn.RouteNet(**param_dict)
 if args.cuda:
@@ -498,9 +533,6 @@ print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 # print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
-# sys.exit()
-
-
 fn = 1
 
 ## Plot losses for test set
@@ -559,8 +591,6 @@ plt.title('Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
 
-sys.exit()
-
 
 ## Plot the fraction of open gates, grouped by target labels
 targets_unique = np.sort(np.unique(target))
@@ -596,12 +626,15 @@ for i, targ in enumerate(targets_unique):
         for i_target in range(np.sum(banks_per_layer)):
             alpha = mn[i_source, i_target]
             if alpha > 0.0:
-                plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+                # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+                plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
     plt.title(targ)
     frame1 = plt.gca()
     frame1.axes.get_xaxis().set_visible(False)
     frame1.axes.get_yaxis().set_visible(False)
 print('Done.')
+
+
 
 sys.exit()
 
