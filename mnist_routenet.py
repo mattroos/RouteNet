@@ -63,8 +63,15 @@ plt.ion()
 # selecting the size of the network. During training, banks that are never or
 # rarely activated could be removed from the network altogether.
 #
+# In comparison to Hinton's capsules ("routing by agreement") I believe a key
+# difference is that in capsule networks, some information is always routed
+# forward (need to confirm), whereas that is not the case here. This might
+# be compared to missed perceptions. E.g., some phonetic sounds that are not
+# behaviorally relevant during childhood development are simply "not heard"
+# (perceived) in adulthood.
 #
-# Aside from effiency, what else might these networks be good at?
+# 
+# Aside from efficiency, what else might these networks be good at?
 #
 # - They might be resistant to Adversarial Examples, in that all outputs
 #   may be gated off. This could be especially true if networks are
@@ -129,7 +136,7 @@ plt.ion()
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
 # IDEA: Accompanying mechanisms to modulate learning?
 
-data_set = 'cifar10'  # 'mnist' or 'cifar10'
+data_set = 'random_location_mnist'  # 'mnist', 'random_location_mnist', or 'cifar10'
 
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
@@ -447,7 +454,6 @@ if data_set == 'cifar10':
     n_input_neurons = 3 * 32 * 32
 elif data_set == 'mnist':
     transform=transforms.Compose([
-        # transforms.Pad(2, fill=0),  # make 32x32 instead of 28x28
         transforms.ToTensor(),
         # transforms.Normalize((0.1307,), (0.3081,)),
         transforms.Normalize((0.5,), (0.5,)),
@@ -456,6 +462,17 @@ elif data_set == 'mnist':
     dir_dataset = dirMnistData
     n_input_neurons = 28 * 28
     # n_input_neurons = 32 * 32
+elif data_set == 'random_location_mnist':
+    transform=transforms.Compose([
+        transforms.ToTensor(),
+        # transforms.Normalize((0.1307,), (0.3081,)),
+        transforms.Normalize((0.5,), (0.5,)),
+        ])
+    f_datasets = rn.RandomLocationMNIST
+    dir_dataset = dirMnistData
+    # n_input_neurons = 28 * 28
+    expanded_size = 56,
+    n_input_neurons = 56 * 56
 else:
     print('Unknown dataset.')
     sys.exit()
@@ -482,7 +499,7 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-n_layers = 3
+n_layers = 4
 n_banks_per_layer = 20
 n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
