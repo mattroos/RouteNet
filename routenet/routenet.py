@@ -81,7 +81,7 @@ class RouteNet(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.3
+        self.prob_dropout_data = 0.0
         self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
@@ -94,14 +94,18 @@ class RouteNet(nn.Module):
                     module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
                     setattr(self, module_name, nn.Dropout(p=self.prob_dropout_gate))
 
+                    # Use unbiased gates, so hard gating is equivalent to soft gating
+                    # such that for hard gating, if all input gates to a target bank
+                    # are closed, then that bank be inactive and the gates downstream
+                    # from the target bank will also be closed.
                     module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, 1))
+                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
 
                     module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
                     setattr(self, module_name, nn.Dropout(p=self.prob_dropout_data))
 
                     module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
 
         # Create the connections between inputs and banks that receive inputs
         for i_input_bank in idx_input_banks:
@@ -331,13 +335,13 @@ class RouteNet(nn.Module):
         # could be used for fast pre-training, and then forward() used for
         # final training with hard gating.
 
+        batch_size = x.size()[0]
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
+
         bank_data_acts = np.full(self.n_hidd_banks, None)
         n_open_gates = 0
         output = None
         total_gate_act = 0
-
-        batch_size = x.size()[0]
-        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
@@ -346,19 +350,25 @@ class RouteNet(nn.Module):
         for i_input_bank in self.idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
             bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
+            # bank_acts_name = 'b%0.2d_acts' % (i_input_bank)
+            # setattr(self, bank_acts_name, F.relu(getattr(self, module_name)(x)))
 
         # Update activations of all the hidden banks. These are soft gated.
         for i_target in range(self.n_hidd_banks):
             # Get list of source banks that are connected to this target bank
             idx_source = np.where(self.bank_conn[:,i_target])[0]
 
+            target_bank_acts_name = 'b%0.2d_acts' % (i_target)
+
             # Compute gate values for each of the input banks, and multiply
             # by the incoming activations.
-            for i_source in idx_source:
+            for idx, i_source in enumerate(idx_source):
                 # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
                 # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
                 module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
                 dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
+                # source_bank_acts_name = 'b%0.2d_acts' % (i_source)
+                # dropout_act = getattr(self, module_name)(getattr(self, source_bank_acts_name))
                 module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
                 gate_act = getattr(self, module_name)(dropout_act)
                 
@@ -377,6 +387,7 @@ class RouteNet(nn.Module):
                 # data_act = getattr(self, module_name)(bank_data_acts[i_source])
                 module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
                 dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
+                # dropout_act = getattr(self, module_name)(getattr(self, source_bank_acts_name))
                 module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
                 data_act = getattr(self, module_name)(dropout_act)
 
@@ -384,8 +395,14 @@ class RouteNet(nn.Module):
                     bank_data_acts[i_target] = gate_act * data_act
                 else:
                     bank_data_acts[i_target] += gate_act * data_act
+                # if idx==0:
+                #     setattr(self, target_bank_acts_name, gate_act * data_act)
+                # else:
+                #     setattr(self, target_bank_acts_name, getattr(self, target_bank_acts_name) + gate_act * data_act)
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            # setattr(self, target_bank_acts_name, F.relu(getattr(self, target_bank_acts_name)))
+
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
@@ -394,6 +411,9 @@ class RouteNet(nn.Module):
         for i_output_bank in self.idx_output_banks:
             module_name = 'b%0.2d_output_data' % (i_output_bank)
             data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
+            # bank_acts_name = 'b%0.2d_acts' % (i_output_bank)
+            # data_act = getattr(self, module_name)(getattr(self, bank_acts_name))
+
             if output is None:
                 output = data_act
             else:
