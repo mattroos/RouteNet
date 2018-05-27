@@ -1,4 +1,4 @@
-# routnet.py
+# routnet_multitask.py
 
 import numpy as np
 
@@ -70,6 +70,18 @@ class RouteNet(nn.Module):
     def __init__(self, n_input_neurons, idx_input_banks, bank_conn, 
                  idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
         super(RouteNet, self).__init__()
+        # Allowing multiple targets (that is, different groups of output neurons
+        # for different tasks), so idx_output_neurons is list of arrays and 
+        # n_output_neurons is a list of equal length.
+
+        # If just a single task is requested, converted some inputs to lists
+        # anyway for compatibility with multi-task code.
+        if not isinstance(n_output_neurons, list):
+            n_output_neurons = [n_output_neurons]
+            idx_output_banks = [idx_output_banks]
+            self.n_tasks = 1
+        else:
+            self.n_tasks = len(n_output_neurons)
 
         self.n_input_neurons = n_input_neurons
         self.idx_input_banks = idx_input_banks
@@ -77,6 +89,7 @@ class RouteNet(nn.Module):
         self.idx_output_banks = idx_output_banks
         self.n_output_neurons = n_output_neurons
         self.n_neurons_per_hidd_bank = n_neurons_per_hidd_bank
+
 
         # "bank_conn" defines the connectivity of the banks. This is an NxN boolean matrix for 
         # which a True value in the i,j-th entry indictes that bank i is a source of input to
@@ -122,9 +135,10 @@ class RouteNet(nn.Module):
 
         # Create the connections between output banks and network output layer.
         # Do not use a bias, so hard gating will be equivalent to soft gating.
-        for i_output_bank in idx_output_banks:
-            module_name = 'b%0.2d_output_data' % (i_output_bank)
-            setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons, bias=False))
+        for i_task, idx in enumerate(idx_output_banks):
+            for i_output_bank in idx:
+                module_name = 'b%0.2d_t%0.2d_output_data' % (i_output_bank, i_task)
+                setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons[i_task], bias=False))
 
     @classmethod
     def init_from_files(cls, model_base_filename):
@@ -347,7 +361,7 @@ class RouteNet(nn.Module):
 
         bank_data_acts = np.full(self.n_hidd_banks, None)
         n_open_gates = 0
-        output = None
+        output = [None] * self.n_tasks
         total_gate_act = 0
 
         if return_gate_status:
@@ -415,16 +429,18 @@ class RouteNet(nn.Module):
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
 
         # Update activations of the output layer. The output banks are not gated.
-        for i_output_bank in self.idx_output_banks:
-            module_name = 'b%0.2d_output_data' % (i_output_bank)
-            data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
-            # bank_acts_name = 'b%0.2d_acts' % (i_output_bank)
-            # data_act = getattr(self, module_name)(getattr(self, bank_acts_name))
+        for i_task, idx in enumerate(self.idx_output_banks):
+            for i_output_bank in idx:
+                module_name = 'b%0.2d_t%0.2d_output_data' % (i_output_bank, i_task)
+                data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
+                # bank_acts_name = 'b%0.2d_acts' % (i_output_bank)
+                # data_act = getattr(self, module_name)(getattr(self, bank_acts_name))
 
-            if output is None:
-                output = data_act
-            else:
-                output += data_act
+                if output[i_task] is None:
+                    output[i_task] = data_act
+                else:
+                    output[i_task] += data_act
+
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status

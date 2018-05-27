@@ -1,4 +1,4 @@
-# mnist_routenet.py
+# mnist_routenet_locations.py
 
 from __future__ import print_function
 import argparse
@@ -142,6 +142,8 @@ plt.ion()
 # IDEA: Accompanying mechanisms to modulate learning?
 
 data_set = 'random_location_mnist'  # 'mnist', 'random_location_mnist', or 'cifar10'
+field_size = 56 # minimum of 28
+
 
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
@@ -248,6 +250,7 @@ def train_softgate(epoch):
     loss_sum = 0.0
     loss_gate_sum = 0.0
     loss_nll_sum = 0.0
+    loss_dist_sum = 0.0
     prob_open_gate_sum = 0.0
     correct = 0
 
@@ -267,9 +270,40 @@ def train_softgate(epoch):
             output, total_gate_act = model.forward_softgate(data)
             prob_open_gate = np.nan
 
-        loss_nll = F.cross_entropy(output, target)  # cross_entropy is log_softmax + negative log likelihood
+        target_class = target[:,0].contiguous()
+        target_x = target[:,1].contiguous().type(torch.FloatTensor)
+        target_y = target[:,2].contiguous().type(torch.FloatTensor)
+
+        # Compute classification loss
+        loss_nll = F.cross_entropy(output[0], target_class)  # cross_entropy is log_softmax + negative log likelihood
+
+        # Compute gate activation loss
         loss_gate = torch.mean(total_gate_act)
-        loss = lambda_nll*loss_nll + lambda_gate*loss_gate
+
+
+
+        ## Compute location loss
+        resolution_x = output[1].size()[1]
+        resolution_y = output[2].size()[1]
+        # Scale ground truth locations to resolution of output nodes
+        target_x = torch.round(target_x / (field_size-1.0) * (resolution_x-1.0)).view(-1,1)
+        target_y = torch.round(target_y / (field_size-1.0) * (resolution_y-1.0)).view(-1,1)
+        # Normalize location outputs to unity sum
+        output[1] = F.softmax(output[1], dim=1)
+        output[2] = F.softmax(output[2], dim=1)
+        # Compute earth-mover distances
+        locations_x = Variable(torch.arange(0,resolution_x).view(1,-1))
+        locations_y = Variable(torch.arange(0,resolution_y).view(1,-1))
+        dist_to_gt_x = torch.abs(target_x - locations_x)
+        dist_to_gt_y = torch.abs(target_y - locations_y)
+        loss_dist_x = torch.mean(torch.sum(output[1] * dist_to_gt_x, dim=1))
+        loss_dist_y = torch.mean(torch.sum(output[2] * dist_to_gt_y, dim=1))
+        loss_dist = loss_dist_x + loss_dist_y
+
+        # Compute aggregate loss
+        lambda_dist = 0.01
+        loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
+
 
         loss.backward()
         optimizer.step()
@@ -277,19 +311,20 @@ def train_softgate(epoch):
         loss_sum += loss.data.cpu().numpy()[0]
         loss_gate_sum += loss_gate.data.cpu().numpy()[0]
         loss_nll_sum += loss_nll.data.cpu().numpy()[0]
+        loss_dist_sum += loss_dist.data.cpu().numpy()[0]
         prob_open_gate_sum += prob_open_gate
 
         # Compute accuracy and accumulate
-        pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
-        correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+        pred = output[0].data.max(1, keepdim=True)[1] # get the index of the max log-probability
+        correct += pred.eq(target_class.data.view_as(pred)).long().cpu().sum()
 
         cnt += 1
 
         if batch_idx % args.log_interval == 0:
             acc = (100. * correct) / (cnt*args.batch_size)
-            print('Train Epoch: {} [{:05d}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
+            print('Train Epoch: {} [{:05d}/{}({:.0f}%)], Loss:{:.6f}, Gate loss:{:.4f}, Prob open gate:{:.4f}, Dist loss:{:.4f}, Acc:{:.2f}, {:.2f} seconds'.format(
                 epoch, (batch_idx+1)*len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
+                100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, loss_dist_sum/cnt, acc, time.time()-t_start))
             cnt = 0
             loss_sum = 0.0
             loss_gate_sum = 0.0
@@ -476,8 +511,8 @@ elif data_set == 'random_location_mnist':
     f_datasets = rn.RandomLocationMNIST
     dir_dataset = dirMnistData
     # n_input_neurons = 28 * 28
-    expanded_size = 56,
-    n_input_neurons = 56 * 56
+    expanded_size = field_size,
+    n_input_neurons = field_size * field_size
 else:
     print('Unknown dataset.')
     sys.exit()
@@ -511,11 +546,14 @@ banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
 # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
 bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
+idx_output_banks = [range(60,70), range(70,75), range(75,80)]
+n_output_neurons = [10, 10, 10]
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
-             'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
-             'n_output_neurons':10,
+             # 'idx_output_banks':range( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
+             'idx_output_banks':idx_output_banks,
+             'n_output_neurons':n_output_neurons,
              'n_neurons_per_hidd_bank':10,
             }
 model = rn.RouteNet(**param_dict)
