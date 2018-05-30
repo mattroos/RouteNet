@@ -280,8 +280,6 @@ def train_softgate(epoch):
         # Compute gate activation loss
         loss_gate = torch.mean(total_gate_act)
 
-
-
         ## Compute location loss
         resolution_x = output[1].size()[1]
         resolution_y = output[2].size()[1]
@@ -301,7 +299,7 @@ def train_softgate(epoch):
         loss_dist = loss_dist_x + loss_dist_y
 
         # Compute aggregate loss
-        lambda_dist = 0.01
+        lambda_dist = 0.5
         loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
 
 
@@ -328,6 +326,7 @@ def train_softgate(epoch):
             cnt = 0
             loss_sum = 0.0
             loss_gate_sum = 0.0
+            loss_dist_sum = 0.0
             prob_open_gate_sum = 0.0
             correct = 0.0
 
@@ -411,6 +410,7 @@ def test_softgate():
     model.eval()
     test_loss_nll = 0
     test_loss_gate = 0
+    test_loss_dist = 0
     test_prob_open_gate = 0
     correct = 0
     cnt_batches = 0
@@ -425,37 +425,65 @@ def test_softgate():
         data, target = Variable(data, volatile=True), Variable(target)
         output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
 
+        target_class = target[:,0].contiguous()
+        target_x = target[:,1].contiguous().type(torch.FloatTensor)
+        target_y = target[:,2].contiguous().type(torch.FloatTensor)
+
         # Store target labels and gate status for all samples
         if cnt_batches==0:
             gates_all = gate_status
-            targets_all = target.data.cpu().numpy()
+            targets_all = target_class.data.cpu().numpy()
         else:
             gates_all = np.append(gates_all, gate_status, axis=0)
-            targets_all = np.append(targets_all, target.data.cpu().numpy(), axis=0)
+            targets_all = np.append(targets_all, target_class.data.cpu().numpy(), axis=0)
 
         # Accumulate losses, etc.
         # test_loss_nll += F.nll_loss(output, target).data[0] # sum up batch loss
-        test_loss_nll += F.cross_entropy(output, target).data[0]  # sum up batch loss
+        test_loss_nll += F.cross_entropy(output[0], target_class).data[0]  # sum up batch loss
+        
         test_loss_gate += torch.mean(total_gate_act).data[0]
+
+        ## Compute location loss
+        resolution_x = output[1].size()[1]
+        resolution_y = output[2].size()[1]
+        # Scale ground truth locations to resolution of output nodes
+        target_x = torch.round(target_x / (field_size-1.0) * (resolution_x-1.0)).view(-1,1)
+        target_y = torch.round(target_y / (field_size-1.0) * (resolution_y-1.0)).view(-1,1)
+        # Normalize location outputs to unity sum
+        output[1] = F.softmax(output[1], dim=1)
+        output[2] = F.softmax(output[2], dim=1)
+        # Compute earth-mover distances
+        locations_x = Variable(torch.arange(0,resolution_x).view(1,-1))
+        locations_y = Variable(torch.arange(0,resolution_y).view(1,-1))
+        dist_to_gt_x = torch.abs(target_x - locations_x)
+        dist_to_gt_y = torch.abs(target_y - locations_y)
+        loss_dist_x = torch.mean(torch.sum(output[1] * dist_to_gt_x, dim=1))
+        loss_dist_y = torch.mean(torch.sum(output[2] * dist_to_gt_y, dim=1))
+        loss_dist = loss_dist_x + loss_dist_y
+        test_loss_dist += loss_dist.data[0]
+
         test_prob_open_gate += prob_open_gate
 
         # Compute accuracy and accumulate
-        pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
-        correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+        pred = output[0].data.max(1, keepdim=True)[1] # get the index of the max log-probability
+        correct += pred.eq(target_class.data.view_as(pred)).long().cpu().sum()
 
         cnt_batches += 1
-        cnt_samples += len(target)
+        cnt_samples += len(target_class)
         
     # test_loss_nll /= len(test_loader.dataset)
     # test_loss_gate /= len(test_loader.dataset)
     test_loss_nll /= cnt_batches
     test_loss_gate /= cnt_batches
     test_prob_open_gate /= cnt_batches
+    test_loss_dist /= cnt_batches
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
     acc = 100. * correct / cnt_samples
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
-        test_loss, correct, cnt_samples,
-        100. * correct / cnt_samples))
+    print('\nTest set: Loss:{:.4f}, Gate loss:{:.4f}, Dist loss:{:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
+        test_loss,
+        test_loss_gate,
+        test_loss_dist,
+        correct, cnt_samples, 100. * correct / cnt_samples))
     return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
 
 
