@@ -256,9 +256,6 @@ def train_softgate(epoch):
 
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
-        # # DELETE ME: Invert half of the classes
-        # ix = np.where(target>=5)[0]
-        # data[ix] = -data[ix]
 
         if args.cuda:
             data, target = data.cuda(), target.cuda()
@@ -292,16 +289,18 @@ def train_softgate(epoch):
         # Compute earth-mover distances
         locations_x = Variable(torch.arange(0,resolution_x).view(1,-1))
         locations_y = Variable(torch.arange(0,resolution_y).view(1,-1))
-        dist_to_gt_x = torch.abs(target_x - locations_x)
-        dist_to_gt_y = torch.abs(target_y - locations_y)
+        # dist_to_gt_x = torch.abs(target_x - locations_x)
+        # dist_to_gt_y = torch.abs(target_y - locations_y)
+        dist_to_gt_x = (target_x - locations_x)**2
+        dist_to_gt_y = (target_y - locations_y)**2
         loss_dist_x = torch.mean(torch.sum(output[1] * dist_to_gt_x, dim=1))
         loss_dist_y = torch.mean(torch.sum(output[2] * dist_to_gt_y, dim=1))
         loss_dist = loss_dist_x + loss_dist_y
 
         # Compute aggregate loss
         lambda_dist = 0.5
-        loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
-
+        # loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
+        loss = loss_dist
 
         loss.backward()
         optimizer.step()
@@ -416,9 +415,6 @@ def test_softgate():
     cnt_batches = 0
     cnt_samples = 0
     for data, target in test_loader:
-        # # DELETE ME: Invert half of the classes
-        # ix = np.where(target>=5)[0]
-        # data[ix] = -data[ix]
 
         if args.cuda:
             data, target = data.cuda(), target.cuda()
@@ -567,15 +563,26 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-n_layers = 4
-n_banks_per_layer = 20
-n_fan_out = 5
+# n_layers = 4
+# n_banks_per_layer = 20
+# n_fan_out = 5
+# banks_per_layer = [n_banks_per_layer] * n_layers
+# # banks_per_layer = np.asarray(banks_per_layer)
+# # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
+# bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
+# idx_output_banks = [range(60,70), range(70,75), range(75,80)]
+# n_output_neurons = [10, 10, 10]
+
+n_layers = 2
+n_banks_per_layer = 11
+n_fan_out = 22
 banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
 # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
 bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
-idx_output_banks = [range(60,70), range(70,75), range(75,80)]
-n_output_neurons = [10, 10, 10]
+idx_output_banks = [range(11,12), range(12,17), range(17,22)]
+n_output_neurons = [10, 20, 20]
+
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
@@ -701,6 +708,21 @@ print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
 fn = 1
+
+## Plot predicted locations for a few samples
+for data, target in test_loader:
+    if args.cuda:
+        data, target = data.cuda(), target.cuda()
+    data, target = Variable(data, volatile=True), Variable(target)
+    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+plt.figure(fn)
+fn = fn + 1
+plt.clf()
+plt.subplot(1,2,1)
+plt.imshow(output[1].data.cpu().numpy()[0:10,:])
+plt.subplot(1,2,2)
+plt.imshow(output[2].data.cpu().numpy()[0:10,:])
+
 
 ## Plot losses for test set
 plt.figure(fn)
