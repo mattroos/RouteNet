@@ -16,6 +16,13 @@ plt.ion()
 
 b_use_cuda = torch.cuda.is_available()
 
+seed = 0
+np.random.seed(seed)
+torch.manual_seed(seed)
+if b_use_cuda:
+    torch.cuda.manual_seed(seed)
+
+
 def make_image_batch(batch_size, field_size=56, obj_size=6):
     assert obj_size%2==0, 'make_image_batch(): obj_size must be even number.'
     im = np.zeros((field_size, field_size))
@@ -42,14 +49,13 @@ class Flatten(nn.Module):
     def forward(self, input):
         return input.view(input.size(0), -1)
 
-field_size = 20
+field_size = 40
 obj_size = 6
 n_labels = field_size-obj_size+1
 
-# TODO: Secifiy number of labels/outputs but dividing the space up
+# TODO: Specify number of labels/outputs and divide the space up
 # into chunks that span more than one pixel. Might want have targets
-# than are more than one-hot, though this will require new earth
-# mover function than can deal with that.
+# that are more than one-hot.
 
 
 
@@ -67,31 +73,65 @@ def earth_mover_loss(prediction, target):
     loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1))
     return loss_dist
 
+def earth_mover_loss2(prediction, target):
+    # Assumes that target is a scalar, indicating which node
+    # should have all the probability mass (target distribution
+    # as 1 at one node, 0 at all others).
+    #
+    # Formulate calculation such that target distribution 
+    # doesn't have to be one-hot.
+    batch_size = prediction.size()[0]
+    n_labels = prediction.size()[1]
+    pmf = F.softmax(prediction, dim=1)
+
+    pmf_targ = np.zeros((batch_size, n_labels), dtype=np.float32)
+    pmf_targ[np.arange(batch_size), target.data.cpu().numpy()] = 1
+    pmf_targ = Variable(torch.from_numpy(pmf_targ))
+    if b_use_cuda:
+        pmf_targ = pmf_targ.cuda()
+
+    d = pmf - pmf_targ
+    dd = torch.cumsum(d, dim=1)
+    loss_dist_sample = torch.sum(torch.abs(dd), dim=1)
+    loss_dist = torch.mean(loss_dist_sample)
+    return loss_dist
 
 
 # Try without nn.Sequential.
 class MyNet(nn.Module):
-    def __init__(self, n_outputs, field_size=56, n_hidden=10, bias=True):
+    def __init__(self, n_outputs, field_size=56, n_hidden=10, bias=True, p_dropout=0.5):
         super(MyNet, self).__init__()
-
-        self.linear_hid_1 = nn.Linear(field_size**2, n_hidden, bias=bias)
-        self.do_1 = nn.Dropout()
-        self.linear_hid_2 = nn.Linear(n_hidden, n_hidden, bias=bias)
-        self.do_2 = nn.Dropout()
+        self.batch_norm1 = nn.BatchNorm1d(field_size**2)
+        self.linear_hid1 = nn.Linear(field_size**2, n_hidden, bias=bias)
+        self.relu1 = nn.ReLU()
+        self.do1 = nn.Dropout(p=p_dropout)
+        self.batch_norm2 = nn.BatchNorm1d(n_hidden)
+        self.linear_hid2 = nn.Linear(n_hidden, n_hidden, bias=bias)
+        self.relu2 = nn.ReLU()
+        self.do2 = nn.Dropout(p=p_dropout)
+        self.batch_norm3 = nn.BatchNorm1d(n_hidden)
         self.linear_out = nn.Linear(n_hidden, n_outputs, bias=bias)
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         batch_size = x.size()[0]
-        hidden = self.linear_hid_1(x.view(batch_size, -1))
-        hidden = self.do_1(hidden)
-        hidden = self.linear_hid_2(hidden)
-        hidden = self.do_2(hidden)
+        # hidden = self.linear_hid_1(x.view(batch_size, -1))
+        norm = self.batch_norm1(x.view(batch_size, -1))
+        hidden = self.linear_hid1(norm)
+        hidden = self.relu1(hidden)
+        hidden = self.do1(hidden)
+        hidden = self.batch_norm2(hidden)
+        hidden = self.linear_hid2(hidden)
+        hidden = self.relu2(hidden)
+        hidden = self.do2(hidden)
+        hidden = self.batch_norm3(hidden)
         output = self.linear_out(hidden)
         return output
 
 ## Define the network model
 bias = True
-n_hidden = 30
+n_hidden = 100
+p_dropout = 0.5
 # net = nn.Sequential(
 # 		  Flatten(),
 #           nn.Linear(field_size**2, n_hidden, bias=bias),
@@ -103,20 +143,21 @@ n_hidden = 30
 #           # nn.ReLU(),
 #           nn.Linear(n_hidden, n_labels, bias=bias),
 #         )
-net = MyNet(n_labels, field_size = field_size, n_hidden=n_hidden, bias=bias)
+net = MyNet(n_labels, field_size = field_size, n_hidden=n_hidden, bias=bias, p_dropout=p_dropout)
 if b_use_cuda:
     net.cuda()
 
-optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(net.parameters(), lr=0.0005)
 # optimizer = torch.optim.SGD(net.parameters(), lr=0.001)
 
 # criterion = F.mse_loss
 # criterion = nn.CrossEntropyLoss()
-criterion = earth_mover_loss
+# criterion = earth_mover_loss
+criterion = earth_mover_loss2
 
 
 batch_size = 100
-n_iter = 5000
+n_iter = 2000
 t_start = time.time()
 for i_iter in range(n_iter):
     net.train()
@@ -133,7 +174,12 @@ for i_iter in range(n_iter):
     optimizer.step()
 
     if ((i_iter+1)%100==0) | (i_iter==0):
-        print('Iter %.3d: Loss = %.4f' % (i_iter+1, loss.data.cpu().numpy()[0]))
+        data, targ = make_image_batch(batch_size, field_size=field_size, obj_size=obj_size)
+        data, targ = Variable(data, requires_grad=False), Variable(targ, requires_grad=False)
+        net.eval()
+        output = net(data)
+        loss_test = criterion(output, targ)
+        print('Iter %.3d: Training Loss = %.4f, Test Loss = %.4f' % (i_iter+1, loss.data.cpu().numpy()[0], loss_test.data.cpu().numpy()[0]))
 
 print('Training duration: %0.4f sec' % (time.time()-t_start))
 
@@ -155,4 +201,20 @@ mx = max(v[1], v[3])
 plt.axis('equal')
 plt.axis([mn, mx, mn, mx])
 plt.plot([mn, mx],[mn, mx],'k--')
-plt.grid('on')
+plt.grid(True)
+
+# For each GT target, plot a row that is the mean PMF for samples with that target
+mean_pmf = np.zeros((n_labels, n_labels))
+for i in range(n_labels):
+    idx = np.where(targ.data.cpu().numpy()==i)[0]
+    if len(idx) > 0:
+        mean_pmf[i] = np.mean(output[idx].data.cpu().numpy(), axis=0)
+plt.figure(2)
+plt.clf()
+plt.imshow(mean_pmf)
+
+
+
+
+
+
