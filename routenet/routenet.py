@@ -474,7 +474,7 @@ class RandomLocationMNIST(data.Dataset):
     training_file = 'training.pt'
     test_file = 'test.pt'
 
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, xy_resolution=10):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.target_transform = target_transform
@@ -530,7 +530,11 @@ class RandomLocationMNIST(data.Dataset):
             target = self.target_transform(target)
 
         # MJR: Target is array of (label, idx_center_x, idx_center_y)
-        target = np.asarray((target, self.expanded_size-left-14, self.expanded_size-top-14))
+        idx_center_x = self.expanded_size-left-14
+        idx_center_y = self.expanded_size-top-14
+        idx_center_x = int(round(idx_center_x / float(self.expanded_size-1.0) * (self.xy_resolution-1.0)))
+        idx_center_y = int(round(idx_center_y / float(self.expanded_size-1.0) * (self.xy_resolution-1.0)))
+        target = np.asarray((target, idx_center_x, idx_center_y))
 
         return img, target
 

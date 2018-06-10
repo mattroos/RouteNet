@@ -277,24 +277,9 @@ def train_softgate(epoch):
         # Compute gate activation loss
         loss_gate = torch.mean(total_gate_act)
 
-        ## Compute location loss
-        resolution_x = output[1].size()[1]
-        resolution_y = output[2].size()[1]
-        # Scale ground truth locations to resolution of output nodes
-        target_x = torch.round(target_x / (field_size-1.0) * (resolution_x-1.0)).view(-1,1)
-        target_y = torch.round(target_y / (field_size-1.0) * (resolution_y-1.0)).view(-1,1)
-        # Normalize location outputs to unity sum
-        output[1] = F.softmax(output[1], dim=1)
-        output[2] = F.softmax(output[2], dim=1)
-        # Compute earth-mover distances
-        locations_x = Variable(torch.arange(0,resolution_x).view(1,-1))
-        locations_y = Variable(torch.arange(0,resolution_y).view(1,-1))
-        # dist_to_gt_x = torch.abs(target_x - locations_x)
-        # dist_to_gt_y = torch.abs(target_y - locations_y)
-        dist_to_gt_x = (target_x - locations_x)**2
-        dist_to_gt_y = (target_y - locations_y)**2
-        loss_dist_x = torch.mean(torch.sum(output[1] * dist_to_gt_x, dim=1))
-        loss_dist_y = torch.mean(torch.sum(output[2] * dist_to_gt_y, dim=1))
+        ## Compute location loss (earth mover distance)
+        loss_dist_x = rn.earth_mover_loss(output[1], target_x, b_use_cuda=args.cuda)
+        loss_dist_y = rn.earth_mover_loss(output[2], target_y, b_use_cuda=args.cuda)
         loss_dist = loss_dist_x + loss_dist_y
 
         # Compute aggregate loss
@@ -581,7 +566,7 @@ banks_per_layer = [n_banks_per_layer] * n_layers
 # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
 bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
 idx_output_banks = [range(11,12), range(12,17), range(17,22)]
-n_output_neurons = [10, 20, 20]
+n_output_neurons = [10, 10, 10]
 
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),

@@ -49,8 +49,8 @@ class Flatten(nn.Module):
     def forward(self, input):
         return input.view(input.size(0), -1)
 
-field_size = 40
-obj_size = 6
+field_size = 56
+obj_size = 14
 n_labels = field_size-obj_size+1
 
 # TODO: Specify number of labels/outputs and divide the space up
@@ -60,7 +60,7 @@ n_labels = field_size-obj_size+1
 
 
 ## Define earth mover loss.
-def earth_mover_loss(prediction, target):
+def earth_mover_loss(prediction, target, b_use_cuda=False):
     # Assumes that target is a scalar, indicating which node
     # should have all the probability mass (target distribution
     # as 1 at one node, 0 at all others).
@@ -70,10 +70,10 @@ def earth_mover_loss(prediction, target):
         locations = locations.cuda()
     dist_targ_to_loc = torch.abs(target.view(-1,1).float() - locations)
     pmf = F.softmax(prediction, dim=1)
-    loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1))
+    loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1)) / n_labels
     return loss_dist
 
-def earth_mover_loss2(prediction, target):
+def earth_mover_loss2(prediction, target, b_use_cuda=False):
     # Assumes that target is a scalar, indicating which node
     # should have all the probability mass (target distribution
     # as 1 at one node, 0 at all others).
@@ -93,7 +93,7 @@ def earth_mover_loss2(prediction, target):
     d = pmf - pmf_targ
     dd = torch.cumsum(d, dim=1)
     loss_dist_sample = torch.sum(torch.abs(dd), dim=1)
-    loss_dist = torch.mean(loss_dist_sample)
+    loss_dist = torch.mean(loss_dist_sample) / n_labels
     return loss_dist
 
 
@@ -115,15 +115,17 @@ class MyNet(nn.Module):
 
     def forward(self, x):
         batch_size = x.size()[0]
-        # hidden = self.linear_hid_1(x.view(batch_size, -1))
+        # hidden = self.linear_hid1(x.view(batch_size, -1))
         norm = self.batch_norm1(x.view(batch_size, -1))
         hidden = self.linear_hid1(norm)
         hidden = self.relu1(hidden)
         hidden = self.do1(hidden)
+
         hidden = self.batch_norm2(hidden)
         hidden = self.linear_hid2(hidden)
         hidden = self.relu2(hidden)
         hidden = self.do2(hidden)
+
         hidden = self.batch_norm3(hidden)
         output = self.linear_out(hidden)
         return output
@@ -159,6 +161,9 @@ criterion = earth_mover_loss2
 batch_size = 100
 n_iter = 2000
 t_start = time.time()
+history_loss_train = np.array([])
+history_loss_test = np.array([])
+
 for i_iter in range(n_iter):
     net.train()
 
@@ -180,8 +185,21 @@ for i_iter in range(n_iter):
         output = net(data)
         loss_test = criterion(output, targ)
         print('Iter %.3d: Training Loss = %.4f, Test Loss = %.4f' % (i_iter+1, loss.data.cpu().numpy()[0], loss_test.data.cpu().numpy()[0]))
+        history_loss_train = np.append(history_loss_train, loss.data.cpu().numpy()[0])
+        history_loss_test = np.append(history_loss_test, loss_test.data.cpu().numpy()[0])
 
 print('Training duration: %0.4f sec' % (time.time()-t_start))
+
+fn = 1
+
+plt.figure(fn)
+fn += 1
+plt.plot(history_loss_train)
+plt.plot(history_loss_test)
+plt.grid(True)
+plt.xlabel('Logging interval')
+plt.ylabel('Loss')
+plt.legend('Training data','Test data')
 
 # Test
 print('\nRunning model on test data...')
@@ -191,7 +209,8 @@ net.eval()
 output = net(data)
 output = F.softmax(output, dim=1)
 loss = criterion(output, targ)
-plt.figure(1)
+plt.figure(fn)
+fn += 1
 plt.clf()
 plt.plot(targ.data.cpu().numpy(), output.data.cpu().numpy(), 'o')
 plt.title('Loss = %.4f' % (loss))
@@ -209,7 +228,8 @@ for i in range(n_labels):
     idx = np.where(targ.data.cpu().numpy()==i)[0]
     if len(idx) > 0:
         mean_pmf[i] = np.mean(output[idx].data.cpu().numpy(), axis=0)
-plt.figure(2)
+plt.figure(fn)
+fn += 1
 plt.clf()
 plt.imshow(mean_pmf)
 

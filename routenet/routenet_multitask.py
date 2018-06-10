@@ -19,6 +19,42 @@ import errno
 import random
 
 
+def earth_mover_loss(prediction, target, b_use_cuda=False):
+    # Assumes that target is a scalar, indicating which node
+    # should have all the probability mass (target distribution
+    # as 1 at one node, 0 at all others).
+    n_labels = prediction.size()[1]
+    locations = Variable(torch.arange(0,n_labels).view(1,-1)).float()
+    if b_use_cuda:
+        locations = locations.cuda()
+    dist_targ_to_loc = torch.abs(target.view(-1,1).float() - locations)
+    pmf = F.softmax(prediction, dim=1)
+    loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1)) / n_labels
+    return loss_dist
+
+def earth_mover_loss2(prediction, target, b_use_cuda=False):
+    # Assumes that target is a scalar, indicating which node
+    # should have all the probability mass (target distribution
+    # as 1 at one node, 0 at all others).
+    #
+    # Formulate calculation such that target distribution 
+    # doesn't have to be one-hot.
+    batch_size = prediction.size()[0]
+    n_labels = prediction.size()[1]
+    pmf = F.softmax(prediction, dim=1)
+
+    pmf_targ = np.zeros((batch_size, n_labels), dtype=np.float32)
+    pmf_targ[np.arange(batch_size), target.data.cpu().numpy().astype(np.int)] = 1
+    pmf_targ = Variable(torch.from_numpy(pmf_targ))
+    if b_use_cuda:
+        pmf_targ = pmf_targ.cuda()
+
+    d = pmf - pmf_targ
+    dd = torch.cumsum(d, dim=1)
+    loss_dist_sample = torch.sum(torch.abs(dd), dim=1)
+    loss_dist = torch.mean(loss_dist_sample) / n_labels
+    return loss_dist
+
 def make_conn_matrix_ff_full(banks_per_layer):
     # A fully-connected feed-forward network.
     # banks_per_layer is a list or array
@@ -64,8 +100,12 @@ def make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out):
 
     return bank_conn
 
-## DOES IS MAKE SENSE TO USE NN MODULE? BECAUSE OF GATING, WE CAN'T USE A BATCH
-## SIZE OF MORE THAN 1.  SO WHAT IS VALUE OF NN MODULE?
+###################################################
+# TODO:
+# Add batch norm to front of banks
+# Create new class that uses ModuleList?
+###################################################
+
 class RouteNet(nn.Module):
     def __init__(self, n_input_neurons, idx_input_banks, bank_conn, 
                  idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
@@ -490,12 +530,13 @@ class RandomLocationMNIST(data.Dataset):
     training_file = 'training.pt'
     test_file = 'test.pt'
 
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, xy_resolution=10):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.target_transform = target_transform
         self.train = train  # training set or test set
         self.expanded_size = expanded_size
+        self.xy_resolution = xy_resolution
         self.pad_each_side = expanded_size - 28
 
         if download:
@@ -546,7 +587,11 @@ class RandomLocationMNIST(data.Dataset):
             target = self.target_transform(target)
 
         # MJR: Target is array of (label, idx_center_x, idx_center_y)
-        target = np.asarray((target, self.expanded_size-left-14, self.expanded_size-top-14))
+        idx_center_x = self.expanded_size-left-14
+        idx_center_y = self.expanded_size-top-14
+        idx_center_x = int(round(idx_center_x / float(self.expanded_size-1.0) * (self.xy_resolution-1.0)))
+        idx_center_y = int(round(idx_center_y / float(self.expanded_size-1.0) * (self.xy_resolution-1.0)))
+        target = np.asarray((target, idx_center_x, idx_center_y))
 
         return img, target
 
