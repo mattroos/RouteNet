@@ -96,6 +96,9 @@ class RouteNet(nn.Module):
         # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
         # Each source/target combo and each source/gate combo?
         for i_source in range(n_hidd_banks):
+            module_name = 'b%0.2d_batch_norm' % (i_source)
+            setattr(self, module_name, nn.BatchNorm1d(self.n_neurons_per_hidd_bank))
+
             for i_target in range(n_hidd_banks):
                 if bank_conn[i_source, i_target]:
                     module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
@@ -115,6 +118,7 @@ class RouteNet(nn.Module):
                     setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
 
         # Create the connections between inputs and banks that receive inputs
+        self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
         for i_input_bank in idx_input_banks:
             module_name = 'input_b%0.2d_data' % (i_input_bank)
             # TODO: Should layers between inputs and receiving banks have a bias or not?
@@ -341,6 +345,7 @@ class RouteNet(nn.Module):
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
         # final training with hard gating.
+        b_batch_norm = True
 
         batch_size = x.size()[0]
         x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
@@ -352,6 +357,10 @@ class RouteNet(nn.Module):
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
+        # Batch norm the inputs.
+        if b_batch_norm:
+            x = self.input_batch_norm(x)
 
         # Update activations of all the input banks. These are not gated.
         for i_input_bank in self.idx_input_banks:
@@ -409,7 +418,9 @@ class RouteNet(nn.Module):
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             # setattr(self, target_bank_acts_name, F.relu(getattr(self, target_bank_acts_name)))
-
+            if b_batch_norm:
+                module_name = 'b%0.2d_batch_norm' % (i_target)
+                bank_data_acts[i_target] = getattr(self, module_name)(bank_data_acts[i_target])
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)

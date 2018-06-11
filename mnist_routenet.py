@@ -141,7 +141,7 @@ plt.ion()
 # IDEA: Hierarchical routing?  Fractal/hierarchical connectivity patterns/modularity?
 # IDEA: Accompanying mechanisms to modulate learning?
 
-data_set = 'random_location_mnist'  # 'mnist', 'random_location_mnist', or 'cifar10'
+data_set = 'mnist'  # 'mnist', or 'cifar10'
 
 # Read in path where raw and processed data are stored
 configParser = ConfigParser.RawConfigParser()
@@ -253,10 +253,6 @@ def train_softgate(epoch):
 
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
-        # # DELETE ME: Invert half of the classes
-        # ix = np.where(target>=5)[0]
-        # data[ix] = -data[ix]
-
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data), Variable(target)
@@ -381,10 +377,6 @@ def test_softgate():
     cnt_batches = 0
     cnt_samples = 0
     for data, target in test_loader:
-        # # DELETE ME: Invert half of the classes
-        # ix = np.where(target>=5)[0]
-        # data[ix] = -data[ix]
-
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
@@ -467,17 +459,17 @@ elif data_set == 'mnist':
     dir_dataset = dirMnistData
     n_input_neurons = 28 * 28
     # n_input_neurons = 32 * 32
-elif data_set == 'random_location_mnist':
-    transform=transforms.Compose([
-        transforms.ToTensor(),
-        # transforms.Normalize((0.1307,), (0.3081,)),
-        transforms.Normalize((0.5,), (0.5,)),
-        ])
-    f_datasets = rn.RandomLocationMNIST
-    dir_dataset = dirMnistData
-    # n_input_neurons = 28 * 28
-    expanded_size = 56,
-    n_input_neurons = 56 * 56
+# elif data_set == 'random_location_mnist':
+#     transform=transforms.Compose([
+#         transforms.ToTensor(),
+#         # transforms.Normalize((0.1307,), (0.3081,)),
+#         transforms.Normalize((0.5,), (0.5,)),
+#         ])
+#     f_datasets = rn.RandomLocationMNIST
+#     dir_dataset = dirMnistData
+#     # n_input_neurons = 28 * 28
+#     expanded_size = 56,
+#     n_input_neurons = 56 * 56
 else:
     print('Unknown dataset.')
     sys.exit()
@@ -504,8 +496,8 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-n_layers = 4
-n_banks_per_layer = 20
+n_layers = 3
+n_banks_per_layer = 10
 n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
