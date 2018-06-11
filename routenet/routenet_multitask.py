@@ -29,7 +29,7 @@ def earth_mover_loss(prediction, target, b_use_cuda=False):
         locations = locations.cuda()
     dist_targ_to_loc = torch.abs(target.view(-1,1).float() - locations)
     pmf = F.softmax(prediction, dim=1)
-    loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1)) / n_labels
+    loss_dist = torch.mean(torch.sum(pmf * dist_targ_to_loc, dim=1)) / (n_labels-1)
     return loss_dist
 
 def earth_mover_loss2(prediction, target, b_use_cuda=False):
@@ -52,7 +52,7 @@ def earth_mover_loss2(prediction, target, b_use_cuda=False):
     d = pmf - pmf_targ
     dd = torch.cumsum(d, dim=1)
     loss_dist_sample = torch.sum(torch.abs(dd), dim=1)
-    loss_dist = torch.mean(loss_dist_sample) / n_labels
+    loss_dist = torch.mean(loss_dist_sample) / (n_labels-1)
     return loss_dist
 
 def make_conn_matrix_ff_full(banks_per_layer):
@@ -561,7 +561,7 @@ class RouteNet(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.0
+        self.prob_dropout_data = 0.3
         self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
@@ -819,6 +819,7 @@ class RouteNet(nn.Module):
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
         # final training with hard gating.
+        b_batch_norm = True
 
         batch_size = x.size()[0]
         x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
@@ -832,7 +833,8 @@ class RouteNet(nn.Module):
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
 
         # Batch norm the inputs.
-        x = self.input_batch_norm(x)
+        if b_batch_norm:
+            x = self.input_batch_norm(x)
 
         # Update activations of all the input banks. These are not gated.
         for i_input_bank in self.idx_input_banks:
@@ -890,6 +892,9 @@ class RouteNet(nn.Module):
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             # setattr(self, target_bank_acts_name, F.relu(getattr(self, target_bank_acts_name)))
+            if b_batch_norm:
+                module_name = 'b%0.2d_batch_norm' % (i_target)
+                bank_data_acts[i_target] = getattr(self, module_name)(bank_data_acts[i_target])
 
 
         if return_gate_status:
@@ -957,7 +962,7 @@ class RandomLocationMNIST(data.Dataset):
     training_file = 'training.pt'
     test_file = 'test.pt'
 
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, xy_resolution=10):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, xy_resolution=10, rotate=False):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.target_transform = target_transform
@@ -965,6 +970,7 @@ class RandomLocationMNIST(data.Dataset):
         self.expanded_size = expanded_size
         self.xy_resolution = xy_resolution
         self.pad_each_side = expanded_size - 28
+        self.rotate = rotate
 
         if download:
             self.download()
@@ -993,6 +999,9 @@ class RandomLocationMNIST(data.Dataset):
         else:
             img, target = self.test_data[index], self.test_labels[index]
 
+        if self.rotate:
+            img = img.transpose_(1,0)
+            
         # MJR:
         # Padding and random cropping the image here, rather than with a transform.
         # After cropping, image size will be 28+pad_each_side, on each side.

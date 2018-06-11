@@ -122,13 +122,18 @@ plt.ion()
 # Related neuroscience experiment:
 #       Put two objects in image. Do two classifications and two locations
 #       emerge at network outputs? Is there neural activity that can
-#       "connects" each object to it's location? Is there ever a confusion
+#       "connect" each object to it's location? Is there ever a confusion
 #       (e.g. swap) of locations?  If noise is added to the neurons?
 
+# TODO: Test on CIFAR--better/faster convergence with BatchNorm layers?
 # TODO: Train/test on CIFAR, and mixed CIFAR-MNIST
 # TODO: On mixed CIFAR-MNIST, do we see divergence of routing paths?
 # TODO: What fraction of banks are never gated and can thus be removed? Method for adapting network size to fit the data?
 
+# TODO: Version that uses ModuleList
+# TODO: Recurrent connectivity with random update schedule
+
+# TODO: Does trained softgate network ever give effective None as output?
 # TODO: Does trained hardgate network ever give None as output?
 # TODO: Not in near term, but test random ordering of gate and bank updates. Converges to solution?
 
@@ -254,6 +259,12 @@ def train_softgate(epoch):
     prob_open_gate_sum = 0.0
     correct = 0
 
+    print('|--------------------|--------|----------|-----------|-----------|----------------|--------|----------|')
+    print('| Epoch              | Loss   | NLL loss | Dist loss | Gate loss | Prob open gate | Accur  | Duration |')
+    print('|--------------------|--------|----------|-----------|-----------|----------------|--------|----------|')
+    print('| Training data      |--------|----------|-----------|-----------|----------------|--------|----------|')
+    print('|--------------------|--------|----------|-----------|-----------|----------------|--------|----------|')
+
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
 
@@ -270,6 +281,10 @@ def train_softgate(epoch):
         target_class = target[:,0].contiguous()
         target_x = target[:,1].contiguous().type(torch.FloatTensor)
         target_y = target[:,2].contiguous().type(torch.FloatTensor)
+        if args.cuda:
+            target_class = target_class.cuda()
+            target_x = target_x.cuda()
+            target_y = target_y.cuda()
 
         # Compute classification loss
         loss_nll = F.cross_entropy(output[0], target_class)  # cross_entropy is log_softmax + negative log likelihood
@@ -283,9 +298,14 @@ def train_softgate(epoch):
         loss_dist = loss_dist_x + loss_dist_y
 
         # Compute aggregate loss
-        lambda_dist = 0.5
-        # loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
-        loss = loss_dist
+        # if epoch > 10:
+        #     lambda_gate = 0.05
+        # else:
+        #     lambda_gate = 0.0
+        lambda_dist = lambda_nll
+        loss = lambda_nll*loss_nll + lambda_gate*loss_gate + lambda_dist*loss_dist
+        # loss = lambda_nll*loss_nll + lambda_gate*loss_gate
+        # loss = lambda_gate*loss_gate + lambda_dist*loss_dist
 
         loss.backward()
         optimizer.step()
@@ -304,21 +324,23 @@ def train_softgate(epoch):
 
         if batch_idx % args.log_interval == 0:
             acc = (100. * correct) / (cnt*args.batch_size)
-            print('Train Epoch: {} [{:05d}/{}({:.0f}%)], Loss:{:.6f}, Gate loss:{:.4f}, Prob open gate:{:.4f}, Dist loss:{:.4f}, Acc:{:.2f}, {:.2f} seconds'.format(
+            print('| {:3d}: ({:5d}/{:5d}) | {:06.3f} | {:06.3f}   | {:06.3f}    | {:06.3f}    | {:06.3f}         | {:06.2f} | {:06.2f} s |'.format(
                 epoch, (batch_idx+1)*len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, loss_dist_sum/cnt, acc, time.time()-t_start))
+                loss_sum/cnt, loss_nll_sum/cnt, loss_dist_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
             cnt = 0
             loss_sum = 0.0
+            loss_nll_sum = 0.0
             loss_gate_sum = 0.0
             loss_dist_sum = 0.0
             prob_open_gate_sum = 0.0
             correct = 0.0
 
     acc = (100. * correct) / (cnt*args.batch_size)
-    print('Train Epoch: {} [{}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
+    print('| {:3d}: ({:5d}/{:5d}) | {:06.3f} | {:06.3f}   | {:06.3f}    | {:06.3f}    | {:06.3f}         | {:06.2f} | {:06.2f} s |'.format(
         epoch, (batch_idx+1)*len(data), len(train_loader.dataset),
-        100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
-    return loss_sum/cnt, loss_nll_sum/cnt, loss_gate_sum/cnt, prob_open_gate/cnt, acc
+        loss_sum/cnt, loss_nll_sum/cnt, loss_dist_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
+
+    return loss_sum/cnt, loss_nll_sum/cnt, loss_gate_sum/cnt, loss_dist_sum/cnt, prob_open_gate/cnt, acc
 
 def test_hardgate_speed():
     # Just get NN output. No other processing. To assess speed.
@@ -399,6 +421,7 @@ def test_softgate():
     correct = 0
     cnt_batches = 0
     cnt_samples = 0
+    t_start = time.time()
     for data, target in test_loader:
 
         if args.cuda:
@@ -424,24 +447,10 @@ def test_softgate():
         
         test_loss_gate += torch.mean(total_gate_act).data[0]
 
-        ## Compute location loss
-        resolution_x = output[1].size()[1]
-        resolution_y = output[2].size()[1]
-        # Scale ground truth locations to resolution of output nodes
-        target_x = torch.round(target_x / (field_size-1.0) * (resolution_x-1.0)).view(-1,1)
-        target_y = torch.round(target_y / (field_size-1.0) * (resolution_y-1.0)).view(-1,1)
-        # Normalize location outputs to unity sum
-        output[1] = F.softmax(output[1], dim=1)
-        output[2] = F.softmax(output[2], dim=1)
-        # Compute earth-mover distances
-        locations_x = Variable(torch.arange(0,resolution_x).view(1,-1))
-        locations_y = Variable(torch.arange(0,resolution_y).view(1,-1))
-        dist_to_gt_x = torch.abs(target_x - locations_x)
-        dist_to_gt_y = torch.abs(target_y - locations_y)
-        loss_dist_x = torch.mean(torch.sum(output[1] * dist_to_gt_x, dim=1))
-        loss_dist_y = torch.mean(torch.sum(output[2] * dist_to_gt_y, dim=1))
-        loss_dist = loss_dist_x + loss_dist_y
-        test_loss_dist += loss_dist.data[0]
+        ## Compute location loss (earth mover distance)
+        loss_dist_x = rn.earth_mover_loss(output[1], target_x, b_use_cuda=args.cuda)
+        loss_dist_y = rn.earth_mover_loss(output[2], target_y, b_use_cuda=args.cuda)
+        test_loss_dist += (loss_dist_x + loss_dist_y).data[0]
 
         test_prob_open_gate += prob_open_gate
 
@@ -456,16 +465,18 @@ def test_softgate():
     # test_loss_gate /= len(test_loader.dataset)
     test_loss_nll /= cnt_batches
     test_loss_gate /= cnt_batches
-    test_prob_open_gate /= cnt_batches
     test_loss_dist /= cnt_batches
+    test_prob_open_gate /= cnt_batches
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
+    lambda_dist = lambda_nll
+    test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate + lambda_dist*test_loss_dist
     acc = 100. * correct / cnt_samples
-    print('\nTest set: Loss:{:.4f}, Gate loss:{:.4f}, Dist loss:{:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
-        test_loss,
-        test_loss_gate,
-        test_loss_dist,
-        correct, cnt_samples, 100. * correct / cnt_samples))
-    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
+    print('|--------------------|--------|----------|-----------|-----------|----------------|--------|----------|')
+    print('| Test data          | {:06.3f} | {:06.3f}   | {:06.3f}    | {:06.3f}    | {:06.3f}         | {:06.2f} | {:06.2f} s |'.format(
+        test_loss, test_loss_nll, test_loss_dist, test_loss_gate, test_prob_open_gate, acc, time.time()-t_start))
+    print('|--------------------|--------|----------|-----------|-----------|----------------|--------|----------|\n')
+
+    return test_loss, test_loss_nll, test_loss_gate, test_loss_dist, test_prob_open_gate, acc, gates_all, targets_all
 
 
 # def test_compare():
@@ -537,6 +548,7 @@ train_loader = torch.utils.data.DataLoader(
                     batch_size = args.test_batch_size,
                     shuffle = False,
                     **kwargs)
+
 test_loader = torch.utils.data.DataLoader(
                     f_datasets(dir_dataset,
                                 train = False,
@@ -558,14 +570,15 @@ test_loader = torch.utils.data.DataLoader(
 # idx_output_banks = [range(60,70), range(70,75), range(75,80)]
 # n_output_neurons = [10, 10, 10]
 
-n_layers = 2
-n_banks_per_layer = 11
-n_fan_out = 22
+n_layers = 3
+n_banks_per_layer = 20
+n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
 # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
 bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
-idx_output_banks = [range(11,12), range(12,17), range(17,22)]
+# idx_output_banks = [range(30,35), range(35,40), range(40,45)]
+idx_output_banks = [range(40,50), range(50,55), range(55,60)]
 n_output_neurons = [10, 10, 10]
 
 param_dict = {'n_input_neurons':n_input_neurons,
@@ -577,6 +590,8 @@ param_dict = {'n_input_neurons':n_input_neurons,
              'n_neurons_per_hidd_bank':10,
             }
 model = rn.RouteNet(**param_dict)
+# model = rn.RouteNet.init_from_files(fullRootFilenameSoftModel)
+# fullRootFilenameSoftModel += '_2'
 if args.cuda:
     model.cuda()
 
@@ -587,12 +602,14 @@ optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 loss_total_train = np.zeros(args.epochs)
 loss_nll_train = np.zeros(args.epochs)
 loss_gate_train = np.zeros(args.epochs)
+loss_dist_train = np.zeros(args.epochs)
 prob_open_gate_train = np.zeros(args.epochs)
 acc_train = np.zeros(args.epochs)
 
 loss_total_test = np.zeros(args.epochs)
 loss_nll_test = np.zeros(args.epochs)
 loss_gate_test = np.zeros(args.epochs)
+loss_dist_test = np.zeros(args.epochs)
 prob_open_gate_test = np.zeros(args.epochs)
 acc_test = np.zeros(args.epochs)
 
@@ -602,15 +619,15 @@ loss_nll_best_epoch = 0
 
 for ep in range(0, args.epochs):
     # Train and test
-    loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
-    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target = test_softgate()
+    loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], loss_dist_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], loss_dist_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
     if loss_nll_test[ep] < loss_nll_best:
         loss_nll_best_epoch = ep
         loss_nll_best = loss_nll_test[ep]
         model.save_model(fullRootFilenameSoftModel)
-        print('Lowest test set loss. Saving model.\n')
+        print('Lowest test set loss so far. Saving model.\n')
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
@@ -694,21 +711,6 @@ print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 fn = 1
 
-## Plot predicted locations for a few samples
-for data, target in test_loader:
-    if args.cuda:
-        data, target = data.cuda(), target.cuda()
-    data, target = Variable(data, volatile=True), Variable(target)
-    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
-plt.figure(fn)
-fn = fn + 1
-plt.clf()
-plt.subplot(1,2,1)
-plt.imshow(output[1].data.cpu().numpy()[0:10,:])
-plt.subplot(1,2,2)
-plt.imshow(output[2].data.cpu().numpy()[0:10,:])
-
-
 ## Plot losses for test set
 plt.figure(fn)
 fn = fn + 1
@@ -719,6 +721,15 @@ f_plot = plt.plot
 h_subplots = 3
 v_subplots = 2
 i_subplot = 1
+
+plt.subplot(h_subplots, v_subplots, i_subplot)
+i_subplot += 1
+f_plot(loss_total_train, 'o-')
+f_plot(loss_total_test, 'o-')
+plt.legend(('Train','Test'))
+plt.title('Total loss')
+plt.xlabel('Epoch')
+plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
@@ -734,16 +745,16 @@ i_subplot += 1
 f_plot(loss_gate_train, 'o-')
 f_plot(loss_gate_test, 'o-')
 plt.legend(('Train','Test'))
-plt.title('Activation loss')
+plt.title('Gate activation loss')
 plt.xlabel('Epoch')
 plt.grid()
 
 plt.subplot(h_subplots, v_subplots, i_subplot)
 i_subplot += 1
-f_plot(loss_total_train, 'o-')
-f_plot(loss_total_test, 'o-')
+f_plot(loss_dist_train, 'o-')
+f_plot(loss_dist_test, 'o-')
 plt.legend(('Train','Test'))
-plt.title('Total loss')
+plt.title('Localization loss')
 plt.xlabel('Epoch')
 plt.grid()
 
@@ -766,13 +777,33 @@ plt.xlabel('Epoch')
 plt.grid()
 
 
+## Get model outputs for a test batch
+model.eval()
+for data, target in test_loader:
+    if args.cuda:
+        data, target = data.cuda(), target.cuda()
+    data, target = Variable(data, volatile=True), Variable(target)
+    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+
+
+## Plot predicted locations for a few samples
+plt.figure(fn)
+fn = fn + 1
+plt.clf()
+plt.subplot(1,2,1)
+plt.imshow(output[1].data.cpu().numpy()[0:10,:])
+plt.subplot(1,2,2)
+plt.imshow(output[2].data.cpu().numpy()[0:10,:])
+
+
 ## Plot the fraction of open gates, grouped by target labels
-targets_unique = np.sort(np.unique(target))
+target_class = target[:,0].data.cpu().numpy()
+targets_unique = np.sort(np.unique(target_class))
 plt.figure(fn)
 fn = fn + 1
 plt.clf()
 for i, targ in enumerate(targets_unique):
-    idx = np.where(target==targ)[0]
+    idx = np.where(target_class==targ)[0]
     mn = np.mean(gate_status[idx,:,:], axis=0)
     plt.subplot(3,4,i+1)
     plt.imshow(mn)
@@ -782,7 +813,8 @@ for i, targ in enumerate(targets_unique):
 ## Plot the fraction of open gates in connectivity map,
 ## grouped by target labels.
 print('Plotting connectivity maps. This may take a minute...')
-targets_unique = np.sort(np.unique(target))
+target_class = target[:,0].data.cpu().numpy()
+targets_unique = np.sort(np.unique(target_class))
 plt.figure(fn)
 fn = fn + 1
 plt.clf()
@@ -792,7 +824,7 @@ for i_layer in range(len(banks_per_layer)):
     layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer))
     node_num = np.append(node_num, np.arange(banks_per_layer[i_layer]))
 for i, targ in enumerate(targets_unique):
-    idx = np.where(target==targ)[0]
+    idx = np.where(target_class==targ)[0]
     mn = np.mean(gate_status[idx,:,:], axis=0)
     plt.subplot(3,4,i+1)
     plt.scatter(layer_num, node_num, s=10, facecolors='none', edgecolors='k')
@@ -809,8 +841,52 @@ for i, targ in enumerate(targets_unique):
 print('Done.')
 
 
+## TODO: Values below should be calculated for the entire MNIST test set,
+## not just one batch (but may be tricky because of how they are generated.)
+
+## Tally number of gates that are always closed for the entire test batch.
+idx_conn = np.where(bank_conn)
+n_closed_always = np.sum(mn[idx_conn[0], idx_conn[1]]==0.0)
+frac_closed_always = n_closed_always/float(len(idx_conn[0]))
+print('\n%d of %d (%0.2f%%) gates were never opened during processing of the test set batch.' % (n_closed_always, len(idx_conn[0]), 100*frac_closed_always))
+
+## Tally average number of gates that are opened for a single sample.
+n_closed_sample = np.mean(np.sum(~gate_status[:,idx_conn[0],idx_conn[1]], axis=1))
+frac_closed_sample = n_closed_sample/float(len(idx_conn[0]))
+print('\nOn average, %0.2f of %d (%0.2f%%) gates were not opened during processing of individual samples from the test batch.' % (n_closed_sample, len(idx_conn[0]), 100*frac_closed_sample))
+
+## Excluding gates that are always closed, tally average number of gates
+## that are opened for a single sample.
+idx2 = np.where(mn[idx_conn[0], idx_conn[1]]>0.0)[0]
+n_closed_sample2 = np.mean(np.sum(~gate_status[:,idx_conn[0][idx2],idx_conn[1][idx2]], axis=1))
+frac_closed_sample2 = n_closed_sample2/float(len(idx2))
+print('\nExcluding gates that were always closed, on average, %0.2f of %d (%0.2f%%) gates\nwere not opened during processing of individual samples from the test batch.' % (n_closed_sample2, len(idx2), 100*frac_closed_sample2))
+
+
+## Get model outputs for a rotated test batch
+rotate_loader = torch.utils.data.DataLoader(
+                    f_datasets(dir_dataset,
+                                train = False,
+                                download = False,
+                                transform = transform,
+                                rotate = True
+                                ),
+                    batch_size = args.test_batch_size,
+                    shuffle = False,
+                    **kwargs)
+
+model.eval()
+for data, target in rotate_loader:
+    if args.cuda:
+        data, target = data.cuda(), target.cuda()
+    data, target = Variable(data, volatile=True), Variable(target)
+    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+
+
 
 sys.exit()
+
+
 
 weights2 = []
 grads2 = []
