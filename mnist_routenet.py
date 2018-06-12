@@ -482,7 +482,7 @@ train_loader = torch.utils.data.DataLoader(
                                 download = False,
                                 transform = transform
                                 ),
-                    batch_size = args.test_batch_size,
+                    batch_size = args.batch_size,
                     shuffle = False,
                     **kwargs)
 test_loader = torch.utils.data.DataLoader(
@@ -510,7 +510,9 @@ param_dict = {'n_input_neurons':n_input_neurons,
              'n_output_neurons':10,
              'n_neurons_per_hidd_bank':10,
             }
-model = rn.RouteNet(**param_dict)
+# model = rn.RouteNet(**param_dict)
+# model = rn.RouteNetModuleList(**param_dict)
+model = rn.RouteNetGateBack(**param_dict)
 if args.cuda:
     model.cuda()
 
@@ -728,8 +730,28 @@ for i, targ in enumerate(targets_unique):
 print('Done.')
 
 
+## Get model outputs for a test batch
+model.eval()
+cnt = 0
+for data, target in test_loader:
+    cnt += 1
+    print(cnt)
+    data = torch.transpose(data, 2, 3).contiguous()
+    # data = torch.zeros_like(data)
+    if args.cuda:
+        data, target = data.cuda(), target.cuda()
+    data, target = Variable(data, volatile=True), Variable(target)
+    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+
+## See if there are any samples for which all the banks
+## connected to output nodes are gated off, effectively
+## meaning no output was generated.
+x = gate_status[:,40:60,60:80]
+b_open = np.any(x, axis=(1,2))
 
 sys.exit()
+
+
 
 weights2 = []
 grads2 = []
