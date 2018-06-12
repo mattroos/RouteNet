@@ -274,9 +274,6 @@ def train_softgate(epoch):
         loss_sum += rn.item(loss)
         loss_gate_sum += rn.item(loss_gate)
         loss_nll_sum += rn.item(loss_nll)
-        # loss_sum += loss.data.cpu().numpy()[0]
-        # loss_gate_sum += loss_gate.data.cpu().numpy()[0]
-        # loss_nll_sum += loss_nll.data.cpu().numpy()[0]
         prob_open_gate_sum += prob_open_gate
 
         # Compute accuracy and accumulate
@@ -396,8 +393,10 @@ def test_softgate():
 
         # Accumulate losses, etc.
         # test_loss_nll += F.nll_loss(output, target).data[0] # sum up batch loss
-        test_loss_nll += F.cross_entropy(output, target).data[0]  # sum up batch loss
-        test_loss_gate += torch.mean(total_gate_act).data[0]
+        test_loss_nll += rn.item(F.cross_entropy(output, target))
+        test_loss_gate += rn.item(torch.mean(total_gate_act))
+        # test_loss_nll += F.cross_entropy(output, target).data[0]  # sum up batch loss
+        # test_loss_gate += torch.mean(total_gate_act).data[0]
         test_prob_open_gate += prob_open_gate
 
         # Compute accuracy and accumulate
