@@ -19,6 +19,19 @@ import errno
 import random
 
 
+## Function to deal with annoying discrepency between pytorch versions,
+## some of which return loss values as scalar tensors, others as
+## array tensors of size 1.
+def item(x):
+    n = len(x.size())
+    if n==0:
+        return tensor.item(x)
+    elif n==1:
+        return x.data.cpu().numpy()[0]
+    else:
+        print('routenet.item(): Could not convert presumed single-element tensor as scalar.')
+
+
 def make_conn_matrix_ff_full(banks_per_layer):
     # A fully-connected feed-forward network.
     # banks_per_layer is a list or array
@@ -760,6 +773,17 @@ class RouteNetGateBack(nn.Module):
         for i in range(n_updates):
             # Get list of source banks that are connected to this target bank
             idx_source = np.where(self.bank_conn[:,i_rand_target[i]])[0]
+
+
+            # TODO:
+            # Change code below.
+            # Probably need to store gate activations, as is done for bank activations.
+            # For each update to the target bank:
+            #   1. Multiply source bank activations by gate activations
+            #   2. Put results of (1) through source-target data layer
+            #   3. Batch-norm target activations
+            #   4. Update gate activations based on target bank activations
+
 
             # Compute gate values for each of the input banks, and multiply
             # by the incoming activations.

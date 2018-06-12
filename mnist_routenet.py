@@ -15,6 +15,7 @@ import ConfigParser
 import matplotlib.pyplot as plt
 
 import routenet as rn
+import pdb
 
 plt.ion()
 
@@ -262,7 +263,7 @@ def train_softgate(epoch):
         else:
             output, total_gate_act = model.forward_softgate(data)
             prob_open_gate = np.nan
-
+        
         loss_nll = F.cross_entropy(output, target)  # cross_entropy is log_softmax + negative log likelihood
         loss_gate = torch.mean(total_gate_act)
         loss = lambda_nll*loss_nll + lambda_gate*loss_gate
@@ -270,9 +271,12 @@ def train_softgate(epoch):
         loss.backward()
         optimizer.step()
 
-        loss_sum += loss.data.cpu().numpy()[0]
-        loss_gate_sum += loss_gate.data.cpu().numpy()[0]
-        loss_nll_sum += loss_nll.data.cpu().numpy()[0]
+        loss_sum += rn.item(loss)
+        loss_gate_sum += rn.item(loss_gate)
+        loss_nll_sum += rn.item(loss_nll)
+        # loss_sum += loss.data.cpu().numpy()[0]
+        # loss_gate_sum += loss_gate.data.cpu().numpy()[0]
+        # loss_nll_sum += loss_nll.data.cpu().numpy()[0]
         prob_open_gate_sum += prob_open_gate
 
         # Compute accuracy and accumulate
@@ -511,8 +515,8 @@ param_dict = {'n_input_neurons':n_input_neurons,
              'n_neurons_per_hidd_bank':10,
             }
 # model = rn.RouteNet(**param_dict)
-# model = rn.RouteNetModuleList(**param_dict)
-model = rn.RouteNetGateBack(**param_dict)
+model = rn.RouteNetModuleList(**param_dict)
+# model = rn.RouteNetGateBack(**param_dict)
 if args.cuda:
     model.cuda()
 
