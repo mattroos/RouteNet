@@ -25,7 +25,7 @@ import random
 def item(x):
     n = len(x.size())
     if n==0:
-        return tensor.item(x)
+        return x.item()
     elif n==1:
         return x.data.cpu().numpy()[0]
     else:
