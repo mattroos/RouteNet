@@ -125,7 +125,6 @@ plt.ion()
 #       "connect" each object to it's location? Is there ever a confusion
 #       (e.g. swap) of locations?  If noise is added to the neurons?
 
-# TODO: Test on CIFAR--better/faster convergence with BatchNorm layers?
 # TODO: Train/test on CIFAR, and mixed CIFAR-MNIST
 # TODO: On mixed CIFAR-MNIST, do we see divergence of routing paths?
 # TODO: What fraction of banks are never gated and can thus be removed? Method for adapting network size to fit the data?
@@ -545,7 +544,7 @@ train_loader = torch.utils.data.DataLoader(
                                 download = False,
                                 transform = transform
                                 ),
-                    batch_size = args.test_batch_size,
+                    batch_size = args.batch_size,
                     shuffle = False,
                     **kwargs)
 

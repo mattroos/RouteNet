@@ -896,7 +896,6 @@ class RouteNet(nn.Module):
                 module_name = 'b%0.2d_batch_norm' % (i_target)
                 bank_data_acts[i_target] = getattr(self, module_name)(bank_data_acts[i_target])
 
-
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
 
