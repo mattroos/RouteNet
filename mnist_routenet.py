@@ -259,7 +259,7 @@ def train_softgate(epoch):
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         if return_gate_status:
-            output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data, return_gate_status=return_gate_status)
+            output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data, return_gate_status=return_gate_status, b_use_cuda=args.cuda)
         else:
             output, total_gate_act = model.forward_softgate(data)
             prob_open_gate = np.nan
@@ -514,8 +514,8 @@ param_dict = {'n_input_neurons':n_input_neurons,
              'n_neurons_per_hidd_bank':10,
             }
 # model = rn.RouteNet(**param_dict)
-model = rn.RouteNetModuleList(**param_dict)
-# model = rn.RouteNetGateBack(**param_dict)
+# model = rn.RouteNetModuleList(**param_dict)
+model = rn.RouteNetRecurrentGate(**param_dict)
 if args.cuda:
     model.cuda()
 
@@ -738,7 +738,6 @@ model.eval()
 cnt = 0
 for data, target in test_loader:
     cnt += 1
-    print(cnt)
     data = torch.transpose(data, 2, 3).contiguous()
     # data = torch.zeros_like(data)
     if args.cuda:

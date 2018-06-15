@@ -550,7 +550,7 @@ class RouteNetModuleList(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False):
+    def forward_softgate(self, x, return_gate_status=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
@@ -643,10 +643,10 @@ class RouteNetModuleList(nn.Module):
         np.save('%s.npy' % (model_base_filename), param_dict)
 
 
-class RouteNetGateBack(nn.Module):
+class RouteNetRecurrentGate(nn.Module):
     def __init__(self, n_input_neurons, idx_input_banks, bank_conn, 
                  idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
-        super(RouteNetGateBack, self).__init__()
+        super(RouteNetRecurrentGate, self).__init__()
 
         self.n_input_neurons = n_input_neurons
         self.idx_input_banks = idx_input_banks
@@ -723,7 +723,84 @@ class RouteNetGateBack(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False):
+    def forward_ff_softgate(self, x, return_gate_status=False, b_use_cuda=False):
+        # Unlike the main forward() method, this one uses soft gates thus
+        # allowing batches to be used in training. The notion is that this
+        # could be used for fast pre-training, and then forward() used for
+        # final training with hard gating.
+        b_batch_norm = True
+
+        batch_size = x.size()[0]
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
+
+        bank_data_acts = np.full(self.n_hidd_banks, None)
+        n_open_gates = 0
+        output = None
+        total_gate_act = 0
+
+        if return_gate_status:
+            gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
+        # Batch norm the inputs.
+        if b_batch_norm:
+            x = self.input_batch_norm(x)
+
+        # Update activations of all the input banks. These are not gated.
+        for i_input_bank in self.idx_input_banks:
+            bank_data_acts[i_input_bank] = F.relu(self.input2hidden[i_input_bank](x))
+
+        # Update activations of all the hidden banks. These are soft gated.
+        for i_target in range(self.n_hidd_banks):
+            # Get list of source banks that are connected to this target bank
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+
+            # Compute gate values for each of the input banks, and multiply
+            # by the incoming activations.
+            for idx, i_source in enumerate(idx_source):
+                dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
+                gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
+                
+                ## Apply hard sigmoid or RELU
+                # gate_act = F.relu(gate_act)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+
+                total_gate_act += gate_act
+
+                if return_gate_status:
+                    gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
+                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                    n_open_gates += np.sum(z)
+
+                dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
+                data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+
+                if bank_data_acts[i_target] is None:
+                    bank_data_acts[i_target] = gate_act * data_act
+                else:
+                    bank_data_acts[i_target] += gate_act * data_act
+
+            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            if b_batch_norm:
+                bank_data_acts[i_target] = self.hidden_batch_norm[i_target](bank_data_acts[i_target])
+
+        if return_gate_status:
+            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+
+        # Update activations of the output layer. The output banks are not gated.
+        for i_output_bank in self.idx_output_banks:
+            data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
+
+            if output is None:
+                output = data_act
+            else:
+                output += data_act
+
+        if return_gate_status:
+            return output, total_gate_act, prob_open_gate, gate_status
+        else:
+            return output, total_gate_act
+
+    def forward_fb_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
@@ -745,11 +822,21 @@ class RouteNetGateBack(nn.Module):
         x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
 
         bank_data_acts = np.full(self.n_hidd_banks, None)
+        bank_gate_acts = np.full((self.n_hidd_banks,self.n_hidd_banks), None)
         for i in range(self.n_hidd_banks):
             bank_data_acts[i] = Variable(torch.zeros((batch_size, self.n_output_neurons)))
+            if b_use_cuda:
+                bank_data_acts[i] = bank_data_acts[i].cuda()
+            for j in range(self.n_hidd_banks):
+                bank_gate_acts[i,j] = Variable(torch.ones((batch_size, 1))) # initialize with gates open
+                if b_use_cuda:
+                    bank_gate_acts[i,j] = bank_gate_acts[i,j].cuda()
+
         n_open_gates = 0
         output = None
-        total_gate_act = 0
+        total_gate_act = Variable(torch.zeros(batch_size,1))
+        if b_use_cuda:
+            total_gate_act = total_gate_act.cuda()
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
@@ -762,34 +849,31 @@ class RouteNetGateBack(nn.Module):
         for i_input_bank in self.idx_input_banks:
             bank_data_acts[i_input_bank] = F.relu(self.input2hidden[i_input_bank](x))
 
-        idx_conn = np.where(self.bank_conn)
-        n_hidden_iters = 1
+        idx_conn_targ = np.unique(np.where(self.bank_conn)[1])
         n_updates = n_hidden_iters * self.n_bank_conn
-        i_rand_target = np.asarray([]).astype(np.int)
+        i_rand_targets = np.asarray([]).astype(np.int)
         for i in range(n_hidden_iters):
-            # i_rand_target = np.append(i_rand_target, np.random.permutation(idx_conn[1]))
-            i_rand_target = np.append(i_rand_target, idx_conn[1])
+            i_rand_targets = np.append(i_rand_targets, np.random.permutation(idx_conn_targ))
+            # i_rand_targets = np.append(i_rand_targets, idx_conn_targ)
 
-        for i in range(n_updates):
+        for i_target in i_rand_targets:
             # Get list of source banks that are connected to this target bank
-            idx_source = np.where(self.bank_conn[:,i_rand_target[i]])[0]
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
 
-
-            # TODO:
-            # Change code below.
-            # Probably need to store gate activations, as is done for bank activations.
-            # For each update to the target bank:
-            #   1. Multiply source bank activations by gate activations
-            #   2. Put results of (1) through source-target data layer
-            #   3. Batch-norm target activations
-            #   4. Update gate activations based on target bank activations
-
-
-            # Compute gate values for each of the input banks, and multiply
-            # by the incoming activations.
+            # Multiply source bank activations by gate values, and compute new target bank activations
             for idx, i_source in enumerate(idx_source):
-                dropout_act = self.hidden2hidden_gate_dropout[i_source][i_rand_target[i]](bank_data_acts[i_rand_target[i]])
-                gate_act = self.hidden2hidden_gate[i_source][i_rand_target[i]](dropout_act)
+                dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
+                data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+                bank_data_acts[i_target] += bank_gate_acts[i_source,i_target] * data_act
+
+            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            if b_batch_norm:
+                bank_data_acts[i_target] = self.hidden_batch_norm[i_target](bank_data_acts[i_target])
+
+            # Update gate activations, using updated target activation
+            for idx, i_source in enumerate(idx_source):
+                dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_target])
+                gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
 
                 ## Apply hard sigmoid or RELU
                 # gate_act = F.relu(gate_act)
@@ -797,63 +881,134 @@ class RouteNetGateBack(nn.Module):
 
                 total_gate_act += gate_act
 
+                # TODO: Need to compute this differently, now that the network has loops
                 if return_gate_status:
-                    gate_status[:, i_source, i_rand_target[i]] = gate_act.data.cpu().numpy()[:,0] > 0
+                    gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
                     z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                     n_open_gates += np.sum(z)
-
-                dropout_act = self.hidden2hidden_data_dropout[i_source][i_rand_target[i]](bank_data_acts[i_source])
-                data_act = self.hidden2hidden_data[i_source][i_rand_target[i]](dropout_act)
-
-                if bank_data_acts[i_rand_target[i]] is None:
-                    bank_data_acts[i_rand_target[i]] = gate_act * data_act
-                else:
-                    bank_data_acts[i_rand_target[i]] += gate_act * data_act
-
-            bank_data_acts[i_rand_target[i]] = F.relu(bank_data_acts[i_rand_target[i]])
-            if b_batch_norm:
-                bank_data_acts[i_rand_target[i]] = self.hidden_batch_norm[i_rand_target[i]](bank_data_acts[i_rand_target[i]])
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size * n_hidden_iters)
 
+        # Update activations of the output layer. The output banks are not gated.
+        for i_output_bank in self.idx_output_banks:
+            data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
 
-        # # Update activations of all the hidden banks. These are soft gated.
-        # for i_target in range(self.n_hidd_banks):
-        #     # Get list of source banks that are connected to this target bank
-        #     idx_source = np.where(self.bank_conn[:,i_target])[0]
+            if output is None:
+                output = data_act
+            else:
+                output += data_act
 
-        #     # Compute gate values for each of the input banks, and multiply
-        #     # by the incoming activations.
-        #     for idx, i_source in enumerate(idx_source):
-        #         dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
-        #         gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
-                
-        #         ## Apply hard sigmoid or RELU
-        #         # gate_act = F.relu(gate_act)
-        #         gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+        if return_gate_status:
+            return output, total_gate_act, prob_open_gate, gate_status
+        else:
+            return output, total_gate_act
 
-        #         total_gate_act += gate_act
+def forward_recurrent_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
+        # Unlike the main forward() method, this one uses soft gates thus
+        # allowing batches to be used in training. The notion is that this
+        # could be used for fast pre-training, and then forward() used for
+        # final training with hard gating.
+        #
+        # This functions has gates that take input from both the source and
+        # data banks. Data banks are initialized as zero, so in the first
+        # iteration of updates, only the FF path impacts the gating (sort
+        # of, depending on activation update ordering: FF or random).
+        #
+        # This function randomly updates activations for hidden banks and gates.
+        # This might improve training (regularization) and require fewer training
+        # batches versus if the full network is iterated over multiple times.
+        # Also, it's not clear what is the best update order to apply
+        # to the banks and gates in the network, generally.
+        #
+        # Another option would be to update all the FF data banks, then
+        # randomly update gates and banks.
 
-        #         if return_gate_status:
-        #             gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
-        #             z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-        #             n_open_gates += np.sum(z)
+        b_batch_norm = True
 
-        #         dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
-        #         data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+        batch_size = x.size()[0]
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
 
-        #         if bank_data_acts[i_target] is None:
-        #             bank_data_acts[i_target] = gate_act * data_act
-        #         else:
-        #             bank_data_acts[i_target] += gate_act * data_act
+        ##############################################################################
+        ##############################################################################
+        # TODO: Activation gates based on both FF and FB data banks. Don't need
+        # to store gate activations, as in fb_softgate()? Or could store both
+        # ff and fb components before nonlinear activation function. When a bank
+        # is updated we: (1) Update FB gate components, (2) add stored FF gate components
+        # and apply nonlinearity, (3) multiply source bank activation by gates,
+        # (4) get updated target bank activation, (5) use new target bank activations
+        # to update it's downtream FF gate components.
+        ##############################################################################
+        ##############################################################################
 
-        #     bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-        #     if b_batch_norm:
-        #         bank_data_acts[i_target] = self.hidden_batch_norm[i_target](bank_data_acts[i_target])
+        bank_data_acts = np.full(self.n_hidd_banks, None)
+        # bank_gate_acts = np.full((self.n_hidd_banks,self.n_hidd_banks), None)
+        for i in range(self.n_hidd_banks):
+            bank_data_acts[i] = Variable(torch.zeros((batch_size, self.n_output_neurons)))
+            if b_use_cuda:
+                bank_data_acts[i] = bank_data_acts[i].cuda()
+            # for j in range(self.n_hidd_banks):
+            #     bank_gate_acts[i,j] = Variable(torch.ones((batch_size, 1))) # initialize with gates open
+            #     if b_use_cuda:
+            #         bank_gate_acts[i,j] = bank_gate_acts[i,j].cuda()
 
-        # if return_gate_status:
-        #     prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+        n_open_gates = 0
+        output = None
+        total_gate_act = Variable(torch.zeros(batch_size,1))
+        if b_use_cuda:
+            total_gate_act = total_gate_act.cuda()
+
+        if return_gate_status:
+            gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
+        # Batch norm the inputs.
+        if b_batch_norm:
+            x = self.input_batch_norm(x)
+
+        # Update activations of all the input banks. These are not gated.
+        for i_input_bank in self.idx_input_banks:
+            bank_data_acts[i_input_bank] = F.relu(self.input2hidden[i_input_bank](x))
+
+        idx_conn_targ = np.unique(np.where(self.bank_conn)[1])
+        n_updates = n_hidden_iters * self.n_bank_conn
+        i_rand_targets = np.asarray([]).astype(np.int)
+        for i in range(n_hidden_iters):
+            i_rand_targets = np.append(i_rand_targets, np.random.permutation(idx_conn_targ))
+            # i_rand_targets = np.append(i_rand_targets, idx_conn_targ)
+
+        for i_target in i_rand_targets:
+            # Get list of source banks that are connected to this target bank
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+
+            # Multiply source bank activations by gate values, and compute new target bank activations
+            for idx, i_source in enumerate(idx_source):
+                dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
+                data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+                bank_data_acts[i_target] += bank_gate_acts[i_source,i_target] * data_act
+
+            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            if b_batch_norm:
+                bank_data_acts[i_target] = self.hidden_batch_norm[i_target](bank_data_acts[i_target])
+
+            # Update gate activations, using updated target activation
+            for idx, i_source in enumerate(idx_source):
+                dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_target])
+                gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
+
+                ## Apply hard sigmoid or RELU
+                # gate_act = F.relu(gate_act)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+
+                total_gate_act += gate_act
+
+                # TODO: Need to compute this differently, now that the network has loops
+                if return_gate_status:
+                    gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
+                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                    n_open_gates += np.sum(z)
+
+        if return_gate_status:
+            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size * n_hidden_iters)
 
         # Update activations of the output layer. The output banks are not gated.
         for i_output_bank in self.idx_output_banks:
