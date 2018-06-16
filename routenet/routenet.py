@@ -800,7 +800,8 @@ class RouteNetRecurrentGate(nn.Module):
         else:
             return output, total_gate_act
 
-    def forward_fb_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
+    #def forward_fb_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
+    def forward_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
@@ -904,7 +905,7 @@ class RouteNetRecurrentGate(nn.Module):
         else:
             return output, total_gate_act
 
-def forward_recurrent_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
+    def forward_recurrent_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
