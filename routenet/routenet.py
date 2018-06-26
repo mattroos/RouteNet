@@ -18,7 +18,7 @@ import os.path
 import errno
 import random
 
-from batchscale import BatchScale1d, Scale
+from batchscale import BatchScale
 
 import pdb
 
@@ -308,8 +308,7 @@ class RouteNetOneToOneOutput(nn.Module):
             self.hidden2hidden_gate_dropout.append(nn.ModuleList())
             self.hidden2hidden_data_dropout.append(nn.ModuleList())
             # self.hidden_batch_scale.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank, affine=True))  # actually linear, not affine, since no bias
-            # self.hidden_batch_scale.append(BatchScale1d(self.n_neurons_per_hidd_bank, linear=True))  # actually linear, not affine, since no bias
-            self.hidden_batch_scale.append(Scale(self.n_neurons_per_hidd_bank))
+            self.hidden_batch_scale.append(BatchScale(self.n_neurons_per_hidd_bank)) # Can't use BatchNorm: batch shifting is incompatible with hard gating.
             for i_target in range(n_hidd_banks):
                 if bank_conn[i_source, i_target]:
                     # To have functional equivalence between hard and soft gating, we don't
@@ -322,10 +321,19 @@ class RouteNetOneToOneOutput(nn.Module):
                     # For unknown reasons at this time, the model learns as desired when the
                     # gate layers are biased but the data layers are not. Not clear why it
                     # doesn't learn as well when the reverse is true.
-                    self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
-                    self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
+
+                    # # Works, but cheating. Data nodes could fire even if gated off. Use bias <=0 only?
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
+
+                    # # Works okay?
                     # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
                     # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+
+                    # Works okay? And is best for implementation as hard gating.
+                    self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+
                     self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
                     self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
                 else:
@@ -334,15 +342,14 @@ class RouteNetOneToOneOutput(nn.Module):
                     self.hidden2hidden_gate_dropout[i_source].append(None)
                     self.hidden2hidden_data_dropout[i_source].append(None)
 
-        # Create the connections between inputs and banks that receive inputs
+        # Create the connections between inputs and banks that receive inputs.
+        # Not using gates on the inputs, so can use BatchNorm rather than BatchScale.
         self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
-        # self.input_batch_norm = BatchScale1d(self.n_input_neurons)
         self.input2hidden = nn.ModuleList()
         for i_input_bank in range(n_hidd_banks):
             self.input2hidden.append(None)
         for i_input_bank in idx_input_banks:
-            # TODO: Should layers between inputs and receiving banks have a bias or not?
-            self.input2hidden[i_input_bank] = nn.Linear(n_input_neurons, n_neurons_per_hidd_bank)
+            self.input2hidden[i_input_bank] = nn.Linear(n_input_neurons, n_neurons_per_hidd_bank, bias=True)
 
         # Create the connections between output banks and network output layer.
         # Do not use a bias, so hard gating will be equivalent to soft gating.
@@ -366,15 +373,9 @@ class RouteNetOneToOneOutput(nn.Module):
     def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
-        # could be used for fast pre-training, and then forward() used for
-        # final training with hard gating.
-
-        ##################################################################3
-        ## TODO:
-        ## How to make gates work with nn.BatchNorm1d? The problem seems to
-        ## be then need to mimic the hardgating with softgating, and still
-        ## use batch norm in a manner that doesn't activate gates.
-        ##################################################################3
+        # could be used for fast pre-training, and then forward_hardgate()
+        # used for inference on single examples/samples, or possibly for final,
+        # fine-tuning training with hard gating.
 
         batch_size = x.size()[0]
         x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
@@ -382,7 +383,6 @@ class RouteNetOneToOneOutput(nn.Module):
         bank_data_acts = np.full(self.n_hidd_banks, None)
         n_open_gates = 0
         total_gate_act = 0
-        # output = None
         output = Variable(torch.zeros(batch_size,self.n_output_neurons))
         if b_use_cuda:
             total_gate_act = total_gate_act.cuda()
@@ -435,9 +435,6 @@ class RouteNetOneToOneOutput(nn.Module):
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             if b_batch_norm:
-                # pdb.set_trace()
-                # bank_data_acts[i_target] = bank_data_acts[i_target] / (bank_data_acts[i_target].std(dim=1).view(-1,1)+1e-10)
-                # bank_data_acts[i_target] = bank_data_acts[i_target] / (bank_data_acts[i_target].std(dim=0).view(1,-1)+1e-10)
                 bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
 
         if return_gate_status:
@@ -445,8 +442,6 @@ class RouteNetOneToOneOutput(nn.Module):
 
         # Update activations of the output layer. The output banks are not gated.
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
-            # if i_output_bank==25:
-            #     pdb.set_trace()
             data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
             output[:,i_output_neuron] = data_act
             # if output is None:
@@ -471,11 +466,24 @@ class RouteNetOneToOneOutput(nn.Module):
             'idx_input_banks':self.idx_input_banks,
             'bank_conn':self.bank_conn,
             'idx_output_banks':self.idx_output_banks,
-            # 'n_output_neurons':self.n_output_neurons,
             'n_neurons_per_hidd_bank':self.n_neurons_per_hidd_bank
         }
         torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
         np.save('%s.npy' % (model_base_filename), param_dict)
+
+    def bias_limit(self, a_min, a_max):
+        # Limit biases of hidden banks
+        for i_target in range(self.n_hidd_banks):
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+            for i_source in idx_source:
+                if self.hidden2hidden_data[i_source][i_target].bias is not None:
+                    self.hidden2hidden_data[i_source][i_target].bias.data = \
+                        np.clip(self.hidden2hidden_data[i_source][i_target].bias.data, a_min, a_max)
+        # Limit biases of output banks
+        for i_output_bank in self.idx_output_banks:
+            if self.hidden2output[i_output_bank].bias is not None:
+                self.hidden2output[i_output_bank].bias.data = \
+                    np.clip(self.hidden2output[i_output_bank].bias.data, a_min, a_max)
 
 
 class RouteNetRecurrentGate(nn.Module):
@@ -635,8 +643,7 @@ class RouteNetRecurrentGate(nn.Module):
         else:
             return output, total_gate_act
 
-    #def forward_fb_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
-    def forward_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
+    def forward_fb_softgate(self, x, n_hidden_iters=4, return_gate_status=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for

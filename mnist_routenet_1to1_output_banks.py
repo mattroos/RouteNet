@@ -13,6 +13,7 @@ import time
 import sys
 import ConfigParser
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 import routenet as rn
 import pdb
@@ -168,7 +169,7 @@ parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                     help='SGD momentum (default: 0.5)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-parser.add_argument('--seed', type=int, default=1, metavar='S',
+parser.add_argument('--seed', type=int, default=0, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
@@ -277,6 +278,7 @@ def train_softgate(epoch):
 
         loss.backward()
         optimizer.step()
+        # model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
 
         loss_sum += rn.item(loss)
         loss_gate_sum += rn.item(loss_gate)
@@ -434,26 +436,29 @@ def test_softgate():
     return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all, pred_all
 
 
-# def test_compare():
-#     model.eval()
-#     cnt = 0
-#     for data, target in test_loader:
-#         e12 = None
-#         if args.cuda:
-#             data, target = data.cuda(), target.cuda()
-#         data, target = Variable(data, volatile=True), Variable(target)
-#         output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data)
-#         output2, total_gate_act2, prob_open_gate2, gate_status2 = model.forward_hardgate(data)
-#
-#         if output2 is None:
-#             if not np.all(output1==0):
-#                 print('Mismatch.')
-#         elif not np.array_equal(output1.data.cpu().numpy(), output2.data.cpu().numpy()):
-#             print('Mismatch.')
-#
-#         if cnt % 1000 == 0:
-#             print(cnt)
-#         cnt += 1
+def test_compare():
+    model.eval()
+    cnt = 0
+    for data, target in test_loader:
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
+        output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data,
+                                                                                     return_gate_status=return_gate_status,
+                                                                                     b_batch_norm=b_batch_norm)
+        output2, total_gate_act2, prob_open_gate2, gate_status2 = model.forward_hardgate(data,
+                                                                                     return_gate_status=return_gate_status,
+                                                                                     b_batch_norm=b_batch_norm)
+
+        if output2 is None:
+            if not np.all(output1==0):
+                print('Mismatch.')
+        elif not np.array_equal(output1.data.cpu().numpy(), output2.data.cpu().numpy()):
+            print('Mismatch.')
+
+        if cnt % 1000 == 0:
+            print(cnt)
+        cnt += 1
 
 
 ## Set up DataLoaders
@@ -535,6 +540,7 @@ model = rn.RouteNetOneToOneOutput(**param_dict)
 # model = rn.RouteNetOneToOneOutput.init_from_files(fullRootFilenameSoftModel)
 if args.cuda:
     model.cuda()
+# model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
@@ -607,10 +613,11 @@ if 0:
 #########################################################################
 
 
+## Run the main training and testing loop
 for ep in range(0, args.epochs):
     # Train and test
     loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
-    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, pred_all = test_softgate()
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
     if loss_nll_test[ep] < loss_nll_best:
@@ -623,7 +630,13 @@ dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
-fn = 1
+## Compare soft and hard gating on test set
+#test_compare()
+
+
+## Start plotting results...
+fn = 1  # Figure number
+
 
 ## Plot losses for test set
 plt.figure(fn)
@@ -681,10 +694,11 @@ plt.title('Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
 
-##################################################
-## TODO: Compute and print confusion matrix
-##################################################
-
+## Compute and print the test set confusion matrix
+cm = confusion_matrix(target, predicted)
+print('\nConfusion Matrix:')
+print(cm)
+print('\n')
 
 ## Plot the fraction of open gates, grouped by target labels
 targets_unique = np.sort(np.unique(target))
