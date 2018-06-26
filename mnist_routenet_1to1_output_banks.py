@@ -242,6 +242,7 @@ def train_hardgate(epoch):
 
 def train_softgate(epoch):
     return_gate_status = True
+    b_batch_norm = True
 
     model.train()
 
@@ -259,9 +260,15 @@ def train_softgate(epoch):
         data, target = Variable(data), Variable(target)
         optimizer.zero_grad()
         if return_gate_status:
-            output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data, return_gate_status=return_gate_status, b_use_cuda=args.cuda)
+            output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data,
+                                                                                          return_gate_status=return_gate_status,
+                                                                                          b_batch_norm=b_batch_norm,
+                                                                                          b_use_cuda=args.cuda)
         else:
-            output, total_gate_act = model.forward_softgate(data)
+            output, total_gate_act = model.forward_softgate(data,
+                                                            return_gate_status=return_gate_status,
+                                                            b_batch_norm=b_batch_norm,
+                                                            b_use_cuda=args.cuda)
             prob_open_gate = np.nan
         
         loss_nll = F.cross_entropy(output, target)  # cross_entropy is log_softmax + negative log likelihood
@@ -371,17 +378,24 @@ def test_softgate_speed():
 def test_softgate():
     # TODO: Match to train_softgate. Don't get/report gate_status/prob in train, but do it in test.
     model.eval()
+
+    return_gate_status = True
+    b_batch_norm = True
+
     test_loss_nll = 0
     test_loss_gate = 0
     test_prob_open_gate = 0
     correct = 0
     cnt_batches = 0
     cnt_samples = 0
+    pred_all = np.asarray([])
     for data, target in test_loader:
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
-        output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+        output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data,
+                                                                                     return_gate_status=return_gate_status,
+                                                                                     b_batch_norm=b_batch_norm)
 
         # Store target labels and gate status for all samples
         if cnt_batches==0:
@@ -402,6 +416,7 @@ def test_softgate():
         # Compute accuracy and accumulate
         pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
         correct += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+        pred_all = np.append(pred_all, pred[:,0], axis=0)
 
         cnt_batches += 1
         cnt_samples += len(target)
@@ -416,7 +431,7 @@ def test_softgate():
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
         test_loss, correct, cnt_samples,
         100. * correct / cnt_samples))
-    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all
+    return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all, pred_all
 
 
 # def test_compare():
@@ -499,7 +514,7 @@ test_loader = torch.utils.data.DataLoader(
                     **kwargs)
 
 ## Instantiate network model
-n_layers = 4
+n_layers = 3
 n_banks_per_layer = 10
 n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
@@ -509,14 +524,15 @@ bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
 param_dict = {'n_input_neurons':n_input_neurons,
              'idx_input_banks':np.arange(banks_per_layer[0]),
              'bank_conn':bank_conn,
-             'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
+             # 'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
+             'idx_output_banks':np.arange( np.sum(banks_per_layer)-10, np.sum(banks_per_layer) ),
              # 'n_output_neurons':10,
              'n_neurons_per_hidd_bank':10,
             }
 # model = rn.RouteNet(**param_dict)
-# model = rn.RouteNetModuleList(**param_dict)
 # model = rn.RouteNetRecurrentGate(**param_dict)
 model = rn.RouteNetOneToOneOutput(**param_dict)
+# model = rn.RouteNetOneToOneOutput.init_from_files(fullRootFilenameSoftModel)
 if args.cuda:
     model.cuda()
 
@@ -540,10 +556,61 @@ t_start = time.time()
 loss_nll_best = np.Inf
 loss_nll_best_epoch = 0
 
+#########################################################################
+## DELETE ME
+if 0:
+    ## Get model outputs for a test batch
+    model.eval()
+    cnt = 0
+    for data, target in test_loader:
+        cnt += 1
+        # data = torch.transpose(data, 2, 3).contiguous()
+        # data = torch.zeros_like(data)
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data, volatile=True), Variable(target)
+        output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True, b_batch_norm=True)
+        # ix = np.where(target.data==0)[0]
+        # output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data[ix,:,:,:], return_gate_status=True, b_batch_norm=True)
+        # pdb.set_trace()
+
+    ## Plot the fraction of open gates in connectivity map,
+    ## grouped by target labels.
+    target = target.data.cpu().numpy()
+    print('Plotting connectivity maps. This may take a minute...')
+    targets_unique = np.sort(np.unique(target))
+    plt.figure()
+    plt.clf()
+    layer_num = np.zeros((0))
+    node_num = np.zeros((0))
+    for i_layer in range(len(banks_per_layer)):
+        layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer))
+        node_num = np.append(node_num, np.arange(banks_per_layer[i_layer]))
+    for i, targ in enumerate(targets_unique):
+        idx = np.where(target==targ)[0]
+        mn = np.mean(gate_status[idx,:,:], axis=0)
+        plt.subplot(3,4,i+1)
+        plt.scatter(layer_num, node_num, s=10, facecolors='none', edgecolors='k')
+        for i_source in range(np.sum(banks_per_layer)):
+            for i_target in range(np.sum(banks_per_layer)):
+                alpha = mn[i_source, i_target]
+                if alpha > 0.0:
+                    plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+                    # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
+        plt.title(targ)
+        # frame1 = plt.gca()
+        # frame1.axes.get_xaxis().set_visible(False)
+        # frame1.axes.get_yaxis().set_visible(False)
+    print('Done.')
+    sys.exit()
+## DELETE ME
+#########################################################################
+
+
 for ep in range(0, args.epochs):
     # Train and test
     loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
-    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target = test_softgate()
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, pred_all = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
     if loss_nll_test[ep] < loss_nll_best:
@@ -554,82 +621,6 @@ for ep in range(0, args.epochs):
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
-
-
-
-# #=======================================
-# # TODO: Fine-tune using hard gating...
-# #=======================================
-# print('\nFINE-TUNING WITH HARD GATING...\n')
-
-# ## Set up DataLoaders using batch size of 1
-# kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-# train_loader = torch.utils.data.DataLoader(
-#     datasets.MNIST(dirMnistData, train=True, download=True,
-#                    transform=transforms.Compose([
-#                        transforms.ToTensor(),
-#                        transforms.Normalize((0.1307,), (0.3081,))
-#                    ])),
-#     batch_size=1, shuffle=True, **kwargs)
-# test_loader = torch.utils.data.DataLoader(
-#     datasets.MNIST(dirMnistData, train=False, transform=transforms.Compose([
-#                        transforms.ToTensor(),
-#                        transforms.Normalize((0.1307,), (0.3081,))
-#                    ])),
-#     batch_size=1, shuffle=True, **kwargs)
-
-# ## Compare seed of softgate and hardgate models
-# # TODO: Forward methods to don't have unnecessary overhead based on requested return items
-# t_hard = test_hardgate_speed()
-# print('Hardgate processing duration = %f seconds' % (t_hard))
-# t_soft = test_softgate_speed()
-# print('Softgate processing duration = %f seconds' % (t_soft))
-
-# sys.exit()
-
-# ## On test set, compare timing and results of full soft gates and hard gates (not really hard gates, but rather dynamically routed)
-# # test_compare()
-# t_start = time.time()
-# loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
-# print('Softgate processing duration = %f seconds' % (time.time()-t_start))
-
-# t_start = time.time()
-# loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_hardgate()
-# print('Hardgate processing duration = %f seconds' % (time.time()-t_start))
-
-# sys.exit()
-
-# # Create new optimizer
-# optimizer = optim.SGD(model.parameters(), lr=args.lr/10, momentum=args.momentum)
-
-# ## Train it, get results on test set, and save the model
-# loss_total = np.zeros(args.epochs)
-# loss_nll = np.zeros(args.epochs)
-# loss_gate = np.zeros(args.epochs)
-# prob_open_gate = np.zeros(args.epochs)
-# acc = np.zeros(args.epochs)
-# t_start = time.time()
-# loss_nll_best = np.Inf
-# loss_nll_best_epoch = 0
-
-# # # Adjust the NLL/gate loss weighting
-# # lambda_nll = 1.0
-# # lambda_gate = 1 - lambda_nll
-
-# for epoch in range(0, args.epochs):
-#     # Train and test
-#     train_hardgate(epoch+1)
-#     loss_total[epoch], loss_nll[epoch], loss_gate[epoch], prob_open_gate[epoch], acc[epoch], gate_status, target = test_softgate()
-
-#     # Save model architecture and params, if it's the best so far on the test set
-#     if loss_nll[epoch] < loss_nll_best:
-#         loss_nll_best_epoch = epoch
-#         loss_nll_best = loss_nll[epoch]
-#         model.save_model(fullRootFilenameHardModel)
-#         print('Best test set accuracy. Saving model.\n')
-
-# dur = time.time()-t_start
-# print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
 fn = 1
@@ -690,6 +681,10 @@ plt.title('Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
 
+##################################################
+## TODO: Compute and print confusion matrix
+##################################################
+
 
 ## Plot the fraction of open gates, grouped by target labels
 targets_unique = np.sort(np.unique(target))
@@ -733,23 +728,25 @@ for i, targ in enumerate(targets_unique):
     # frame1.axes.get_yaxis().set_visible(False)
 print('Done.')
 
+sys.exit()
+
 
 ## Get model outputs for a test batch
 model.eval()
 cnt = 0
 for data, target in test_loader:
     cnt += 1
-    data = torch.transpose(data, 2, 3).contiguous()
+    # data = torch.transpose(data, 2, 3).contiguous()
     # data = torch.zeros_like(data)
     if args.cuda:
         data, target = data.cuda(), target.cuda()
     data, target = Variable(data, volatile=True), Variable(target)
-    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True)
+    output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True, b_batch_norm = True)
 
 ## See if there are any samples for which all the banks
 ## connected to output nodes are gated off, effectively
 ## meaning no output was generated.
-x = gate_status[:,40:60,60:80]
+x = gate_status[:,20:40,50:60]
 b_open = np.any(x, axis=(1,2))
 
 sys.exit()

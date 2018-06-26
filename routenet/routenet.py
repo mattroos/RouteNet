@@ -18,6 +18,9 @@ import os.path
 import errno
 import random
 
+from batchscale import BatchScale1d, Scale
+
+import pdb
 
 ## Function to deal with annoying discrepency between pytorch versions,
 ## some of which return loss values as scalar tensors, others as
@@ -107,398 +110,6 @@ class RouteNet(nn.Module):
         # Do not use a bias, so hard gating will be equivalent to soft gating.
         # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
         # Each source/target combo and each source/gate combo?
-        for i_source in range(n_hidd_banks):
-            module_name = 'b%0.2d_batch_norm' % (i_source)
-            setattr(self, module_name, nn.BatchNorm1d(self.n_neurons_per_hidd_bank))
-
-            for i_target in range(n_hidd_banks):
-                if bank_conn[i_source, i_target]:
-                    module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
-                    setattr(self, module_name, nn.Dropout(p=self.prob_dropout_gate))
-
-                    # Use unbiased gates, so hard gating is equivalent to soft gating
-                    # such that for hard gating, if all input gates to a target bank
-                    # are closed, then that bank be inactive and the gates downstream
-                    # from the target bank will also be closed.
-                    module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
-
-                    module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
-                    setattr(self, module_name, nn.Dropout(p=self.prob_dropout_data))
-
-                    module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                    setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
-
-        # Create the connections between inputs and banks that receive inputs
-        self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
-        for i_input_bank in idx_input_banks:
-            module_name = 'input_b%0.2d_data' % (i_input_bank)
-            # TODO: Should layers between inputs and receiving banks have a bias or not?
-            setattr(self, module_name, nn.Linear(n_input_neurons, n_neurons_per_hidd_bank))
-
-        # Create the connections between output banks and network output layer.
-        # Do not use a bias, so hard gating will be equivalent to soft gating.
-        for i_output_bank in idx_output_banks:
-            module_name = 'b%0.2d_output_data' % (i_output_bank)
-            setattr(self, module_name, nn.Linear(n_neurons_per_hidd_bank, n_output_neurons, bias=False))
-
-    @classmethod
-    def init_from_files(cls, model_base_filename):
-        # Load model metaparameters, instantiate a model with that architecture,
-        # load model weights, and set the model weights.
-        param_dict = np.load('%s.npy' % (model_base_filename)).item()
-        net = cls(**param_dict)
-        # if b_use_cuda:
-        #     net = net.cuda()
-        net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
-        return net
-
-    def forward_hardgate(self, x, return_gate_status=False):
-        # Definition: A "bank" of neurons is a group of neurons that are not connected to 
-        # each other. If two banks are connected, they are fully connected. Inputs to a bank
-        # from others banks may be gated on/off in bank-wise fashion. E.g., if Set_i has
-        # inputs Set_j and Set_k,
-        #    si = a( gji()*Wji*sj + gki()*Wki*sj) ), where gji() is a gating function and a() is an activation function.
-        #
-        # Gating functions, g(), may be implemented in various neural ways:
-        # 1. Source banks have clones which all generate the same output but have different
-        #    targets. That target bank has a single gating neuron for each source bank, which
-        #    is used to compute the gate function, gji(), and possibly inhibit the dendrites
-        #    that take input from that source. Thus only if the gate neuron is "open" do we
-        #    need to compute the impact of the relevant source bank. If all input gates are closed
-        #    than nothing needs to be done. The default mode for a gate is closed, such that
-        #    a "table of open gates" can be iteratively updated and used to determine which banks
-        #    need updating and which inputs they should process. This might be done asyncronously.
-
-        # ASSUMPTION: For now, I'm assuming that the structure is layered and feedforward such that one pass
-        # through the connection matrix from low index value to high index value will result in
-        # complete processing of the data from input to output.
-
-        bank_data_acts = np.full(self.n_hidd_banks, None)
-        n_open_gates = 0
-        total_gate_act = None
-
-        batch_size = x.size()[0]
-        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
-        
-        if return_gate_status:
-            gate_status = np.full(self.bank_conn.shape, False)
-
-        # Update activations of all the input banks. These are not gated.
-        for i_input_bank in self.idx_input_banks:
-            module_name = 'input_b%0.2d_data' % (i_input_bank)
-            bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
-
-        # Update activations of all the hidden banks. These are gated.
-        for i_target in range(self.n_hidd_banks):
-            # Get list of source banks that are connected to this target bank
-            idx_source = np.where(self.bank_conn[:,i_target])[0]
-
-            # Check to see if all source bank activations are None, in which case
-            # nothing has to be done.
-            if np.all(bank_data_acts[idx_source]==None):
-                continue
-
-            # Compute gate values for each of the input banks, and data values if
-            # gate is open.
-            for i_source in idx_source:
-                if bank_data_acts[i_source] is not None:
-                    # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                    # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
-                    module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
-                    dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-                    module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                    gate_act = getattr(self, module_name)(dropout_act)
-
-                    ## Apply hard sigmoid, RELU, or similar
-                    # gate_act = F.relu(gate_act)
-                    # gate_act = F.sigmoid(gate_act)
-                    gate_act = F.hardtanh(gate_act, 0.0, 1.0)
-
-                    if total_gate_act is None:
-                        total_gate_act = gate_act
-                    else:
-                        total_gate_act += gate_act
-
-                    if gate_act.data[0,0] > 0:
-                        if return_gate_status:
-                            gate_status[i_source, i_target] = True
-                            n_open_gates += 1
-                        # module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                        # data_act = getattr(self, module_name)(bank_data_acts[i_source])
-                        module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
-                        dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-                        module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                        data_act = getattr(self, module_name)(dropout_act)
-
-                        # Could we train in a way such that gate activations
-                        # are nearly always 0 or 1, so we don't have to multiply
-                        # them by the data activations, as in the soft-gating
-                        # case? Probabilistic activation?
-                        if bank_data_acts[i_target] is None:
-                            # TODO: If gate_act==1.0, don't need to multiply data activations by gate activation
-                            # Some bug below. Can't multiply by gate_act and also do backprop (loss.backward()).
-                            #   Don't know why.
-                            bank_data_acts[i_target] = gate_act * data_act
-                            # bank_data_acts[i_target] = data_act
-                        else:
-                            # TODO: If gate_act==1.0, don't need to multiply data activations by gate activation
-                            bank_data_acts[i_target] += gate_act * data_act
-
-            if bank_data_acts[i_target] is not None:
-                bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-
-        if return_gate_status:
-            prob_open_gate = n_open_gates / float(self.n_bank_conn)
-
-        # Update activations output layer. The output 'bank' is not gated, but it may
-        # not have any active inputs, so have to check for that.
-        output = None
-        if np.all(bank_data_acts[self.idx_output_banks]==None):
-            return output, total_gate_act, prob_open_gate, gate_status
-        for i_output_bank in self.idx_output_banks:
-            if bank_data_acts[i_output_bank] is not None:
-                module_name = 'b%0.2d_output_data' % (i_output_bank)
-                data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
-                if output is None:
-                    output = data_act
-                else:
-                    output += data_act
-
-        if return_gate_status:
-            return output, total_gate_act, prob_open_gate, gate_status
-        else:
-            return output, total_gate_act
-
-    # def forward_softgate(self, x):
-    #     # Unlike the main forward() method, this one uses soft gates thus
-    #     # allowing batches to be used in training. The notion is that this
-    #     # could be used for fast pre-training, and then forward() used for
-    #     # final training with hard gating.
-
-    #     bank_data_acts = np.full(self.n_hidd_banks, None)
-    #     n_open_gates = 0
-    #     output = None
-    #     total_gate_act = 0
-
-        # batch_size = x.size()[0]
-        # x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
-
-    #     gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
-
-    #     # Update activations of all the input banks. These are not gated.
-    #     for i_input_bank in self.idx_input_banks:
-    #         module_name = 'input_b%0.2d_data' % (i_input_bank)
-    #         bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
-    #         # TODO: Add activations to total activation energy?
-
-    #     # Update activations of all the hidden banks. These are soft gated.
-    #     for i_target in range(self.n_hidd_banks):
-    #         # Get list of source banks that are connected to this target bank
-    #         idx_source = np.where(self.bank_conn[:,i_target])[0]
-
-    #         # Compute gate values for each of the input banks, and multiply
-    #         # by the incoming activations.
-    #         for i_source in idx_source:
-    #             # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-    #             # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
-    #             module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
-    #             dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-    #             module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-    #             gate_act = getattr(self, module_name)(dropout_act)
-                
-    #             ## Apply hard sigmoid, RELU, or similar
-    #             # gate_act = F.relu(gate_act)
-    #             # gate_act = F.sigmoid(gate_act)
-    #             gate_act = F.hardtanh(gate_act, 0.0, 1.0)
-    #             total_gate_act += gate_act
-    #             # TODO: Add activations to total activation energy?
-
-    #             gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
-
-    #             z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-    #             n_open_gates += np.sum(z)
-
-    #             # module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-    #             # data_act = getattr(self, module_name)(bank_data_acts[i_source])
-    #             module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
-    #             dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-    #             module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-    #             data_act = getattr(self, module_name)(dropout_act)
-
-    #             if bank_data_acts[i_target] is None:
-    #                 bank_data_acts[i_target] = gate_act * data_act
-    #             else:
-    #                 bank_data_acts[i_target] += gate_act * data_act
-
-    #         bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-    #         # TODO: Add activations to total activation energy?
-
-    #     prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
-
-    #     # Update activations of the output layer. The output banks are not gated.
-    #     for i_output_bank in self.idx_output_banks:
-    #         module_name = 'b%0.2d_output_data' % (i_output_bank)
-    #         # Part of BUG is here/below. If output layers have bias, then even if
-    #         # input is zero, they may have non-zero output, unlike for the
-    #         # hard gate model.
-    #         data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
-    #         if output is None:
-    #             output = data_act
-    #         else:
-    #             output += data_act
-
-    #     # TODO: Add output activations to total activation energy?
-
-    #     return output, total_gate_act, prob_open_gate, gate_status
-
-    def forward_softgate(self, x, return_gate_status=False):
-        # Unlike the main forward() method, this one uses soft gates thus
-        # allowing batches to be used in training. The notion is that this
-        # could be used for fast pre-training, and then forward() used for
-        # final training with hard gating.
-        b_batch_norm = True
-
-        batch_size = x.size()[0]
-        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
-
-        bank_data_acts = np.full(self.n_hidd_banks, None)
-        n_open_gates = 0
-        output = None
-        total_gate_act = 0
-
-        if return_gate_status:
-            gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
-
-        # Batch norm the inputs.
-        if b_batch_norm:
-            x = self.input_batch_norm(x)
-
-        # Update activations of all the input banks. These are not gated.
-        for i_input_bank in self.idx_input_banks:
-            module_name = 'input_b%0.2d_data' % (i_input_bank)
-            bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
-            # bank_acts_name = 'b%0.2d_acts' % (i_input_bank)
-            # setattr(self, bank_acts_name, F.relu(getattr(self, module_name)(x)))
-
-        # Update activations of all the hidden banks. These are soft gated.
-        for i_target in range(self.n_hidd_banks):
-            # Get list of source banks that are connected to this target bank
-            idx_source = np.where(self.bank_conn[:,i_target])[0]
-
-            target_bank_acts_name = 'b%0.2d_acts' % (i_target)
-
-            # Compute gate values for each of the input banks, and multiply
-            # by the incoming activations.
-            for idx, i_source in enumerate(idx_source):
-                # module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                # gate_act = getattr(self, module_name)(bank_data_acts[i_source])
-                module_name = 'b%0.2d_b%0.2d_gate_dropout' % (i_source, i_target)
-                dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-                # source_bank_acts_name = 'b%0.2d_acts' % (i_source)
-                # dropout_act = getattr(self, module_name)(getattr(self, source_bank_acts_name))
-                module_name = 'b%0.2d_b%0.2d_gate' % (i_source, i_target)
-                gate_act = getattr(self, module_name)(dropout_act)
-                
-                ## Apply hard sigmoid or RELU
-                # gate_act = F.relu(gate_act)
-                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
-
-                total_gate_act += gate_act
-
-                if return_gate_status:
-                    gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
-                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-                    n_open_gates += np.sum(z)
-
-                # module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                # data_act = getattr(self, module_name)(bank_data_acts[i_source])
-                module_name = 'b%0.2d_b%0.2d_data_dropout' % (i_source, i_target)
-                dropout_act = getattr(self, module_name)(bank_data_acts[i_source])
-                # dropout_act = getattr(self, module_name)(getattr(self, source_bank_acts_name))
-                module_name = 'b%0.2d_b%0.2d_data' % (i_source, i_target)
-                data_act = getattr(self, module_name)(dropout_act)
-
-                if bank_data_acts[i_target] is None:
-                    bank_data_acts[i_target] = gate_act * data_act
-                else:
-                    bank_data_acts[i_target] += gate_act * data_act
-                # if idx==0:
-                #     setattr(self, target_bank_acts_name, gate_act * data_act)
-                # else:
-                #     setattr(self, target_bank_acts_name, getattr(self, target_bank_acts_name) + gate_act * data_act)
-
-            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
-            # setattr(self, target_bank_acts_name, F.relu(getattr(self, target_bank_acts_name)))
-            if b_batch_norm:
-                module_name = 'b%0.2d_batch_norm' % (i_target)
-                bank_data_acts[i_target] = getattr(self, module_name)(bank_data_acts[i_target])
-
-        if return_gate_status:
-            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
-
-        # Update activations of the output layer. The output banks are not gated.
-        for i_output_bank in self.idx_output_banks:
-            module_name = 'b%0.2d_output_data' % (i_output_bank)
-            data_act = getattr(self, module_name)(bank_data_acts[i_output_bank])
-            # bank_acts_name = 'b%0.2d_acts' % (i_output_bank)
-            # data_act = getattr(self, module_name)(getattr(self, bank_acts_name))
-
-            if output is None:
-                output = data_act
-            else:
-                output += data_act
-
-        if return_gate_status:
-            return output, total_gate_act, prob_open_gate, gate_status
-        else:
-            return output, total_gate_act
-
-    def save_model(self, model_base_filename):
-        # Just saving the model, not the optimizer state. To stop and 
-        # resume training, optimizer state needs to be saved as well.
-        # https://discuss.pytorch.org/t/saving-and-loading-a-model-in-pytorch/2610
-        param_dict = {
-            'n_input_neurons':self.n_input_neurons,
-            'idx_input_banks':self.idx_input_banks,
-            'bank_conn':self.bank_conn,
-            'idx_output_banks':self.idx_output_banks,
-            'n_output_neurons':self.n_output_neurons,
-            'n_neurons_per_hidd_bank':self.n_neurons_per_hidd_bank
-        }
-        torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
-        np.save('%s.npy' % (model_base_filename), param_dict)
-
-
-class RouteNetModuleList(nn.Module):
-    def __init__(self, n_input_neurons, idx_input_banks, bank_conn, 
-                 idx_output_banks, n_output_neurons, n_neurons_per_hidd_bank=10):
-        super(RouteNetModuleList, self).__init__()
-
-        self.n_input_neurons = n_input_neurons
-        self.idx_input_banks = idx_input_banks
-        self.bank_conn = bank_conn
-        self.idx_output_banks = idx_output_banks
-        self.n_output_neurons = n_output_neurons
-        self.n_neurons_per_hidd_bank = n_neurons_per_hidd_bank
-
-        # "bank_conn" defines the connectivity of the banks. This is an NxN boolean matrix for 
-        # which a True value in the i,j-th entry indictes that bank i is a source of input to
-        # bank j. The matrix could define any structure of banks, including for example, a
-        # feedforward layered structure or a structure in which all banks are connected.
-        n_hidd_banks = bank_conn.shape[0]
-        assert (len(bank_conn.shape) == 2), "bank_conn connectivity matrix must have two dimensions of equal size."
-        assert (bank_conn.shape[1] == n_hidd_banks), "bank_conn connectivity matrix must have two dimensions of equal size."
-
-        self.n_hidd_banks = n_hidd_banks
-        self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.0
-        self.prob_dropout_gate = 0.0
-
-        # Create all the hidden nn.Linear modules including those for data and those for gates.
-        # Do not use a bias, so hard gating will be equivalent to soft gating.
-        # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
-        # Each source/target combo and each source/gate combo?
         self.hidden2hidden_gate = nn.ModuleList()
         self.hidden2hidden_data = nn.ModuleList()
         self.hidden2hidden_gate_dropout = nn.ModuleList()
@@ -509,11 +120,24 @@ class RouteNetModuleList(nn.Module):
             self.hidden2hidden_data.append(nn.ModuleList())
             self.hidden2hidden_gate_dropout.append(nn.ModuleList())
             self.hidden2hidden_data_dropout.append(nn.ModuleList())
-            self.hidden_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank))
+            self.hidden_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank, affine=False))
+            # self.hidden_batch_norm.append(BatchScale1d(self.n_neurons_per_hidd_bank, linear=True)
             for i_target in range(n_hidd_banks):
                 if bank_conn[i_source, i_target]:
+                    # 6/25/18: New thought... To have functional equivalence between hard and
+                    # soft gating, we don't necessarily need the gate layers to be unbiased. What we
+                    # need is for either the data layers or the gate layers to be unbiased. In 
+                    # that case, if the source bank is inactive (all zeros), then the gated-multiplied
+                    # weighted sum at the target bank will be zeros either because the gate value
+                    # is zero (unbiased gate layer) or the weighted data sum will be zero (unbiased
+                    # data layer).
+                    # For unknown reasons at this time, the model learns as expected when the gate
+                    # layers are biased by the data layers are not. Not clear why it's not working
+                    # when the reverse is true.
                     self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
                     self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
                     self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
                     self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
                 else:
@@ -677,17 +301,31 @@ class RouteNetOneToOneOutput(nn.Module):
         self.hidden2hidden_data = nn.ModuleList()
         self.hidden2hidden_gate_dropout = nn.ModuleList()
         self.hidden2hidden_data_dropout = nn.ModuleList()
-        self.hidden_batch_norm = nn.ModuleList()
+        self.hidden_batch_scale = nn.ModuleList()
         for i_source in range(n_hidd_banks):
             self.hidden2hidden_gate.append(nn.ModuleList())
             self.hidden2hidden_data.append(nn.ModuleList())
             self.hidden2hidden_gate_dropout.append(nn.ModuleList())
             self.hidden2hidden_data_dropout.append(nn.ModuleList())
-            self.hidden_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank))
+            # self.hidden_batch_scale.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank, affine=True))  # actually linear, not affine, since no bias
+            # self.hidden_batch_scale.append(BatchScale1d(self.n_neurons_per_hidd_bank, linear=True))  # actually linear, not affine, since no bias
+            self.hidden_batch_scale.append(Scale(self.n_neurons_per_hidd_bank))
             for i_target in range(n_hidd_banks):
                 if bank_conn[i_source, i_target]:
+                    # To have functional equivalence between hard and soft gating, we don't
+                    # necessarily need the gate layers to be unbiased. What we need is for
+                    # either the data layers or the gate layers to be unbiased. In that
+                    # case, if the source bank is inactive (all zeros), then the
+                    # gated-multiplied weighted sum at the target bank will be zeros either
+                    # because the gate value is zero (unbiased gate layer) or the weighted
+                    # data sum will be zero (unbiased data layer).
+                    # For unknown reasons at this time, the model learns as desired when the
+                    # gate layers are biased but the data layers are not. Not clear why it
+                    # doesn't learn as well when the reverse is true.
                     self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
                     self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
                     self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
                     self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
                 else:
@@ -698,6 +336,7 @@ class RouteNetOneToOneOutput(nn.Module):
 
         # Create the connections between inputs and banks that receive inputs
         self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
+        # self.input_batch_norm = BatchScale1d(self.n_input_neurons)
         self.input2hidden = nn.ModuleList()
         for i_input_bank in range(n_hidd_banks):
             self.input2hidden.append(None)
@@ -724,12 +363,18 @@ class RouteNetOneToOneOutput(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False, b_use_cuda=False):
+    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward() used for
         # final training with hard gating.
-        b_batch_norm = True
+
+        ##################################################################3
+        ## TODO:
+        ## How to make gates work with nn.BatchNorm1d? The problem seems to
+        ## be then need to mimic the hardgating with softgating, and still
+        ## use batch norm in a manner that doesn't activate gates.
+        ##################################################################3
 
         batch_size = x.size()[0]
         x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
@@ -771,7 +416,12 @@ class RouteNetOneToOneOutput(nn.Module):
                 total_gate_act += gate_act
 
                 if return_gate_status:
-                    gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
+                    # Gate status is set to True (open) only if both the gate node is
+                    # greater than zero and one or more activations from the source
+                    # bank are non-zero.  I.e., if the gate is open but all the data
+                    # inputs are zeros, this is functionally the same as a closed gate.
+                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
+                                                         np.any(bank_data_acts[i_source].data, axis=1)
                     z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                     n_open_gates += np.sum(z)
 
@@ -785,16 +435,20 @@ class RouteNetOneToOneOutput(nn.Module):
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             if b_batch_norm:
-                bank_data_acts[i_target] = self.hidden_batch_norm[i_target](bank_data_acts[i_target])
+                # pdb.set_trace()
+                # bank_data_acts[i_target] = bank_data_acts[i_target] / (bank_data_acts[i_target].std(dim=1).view(-1,1)+1e-10)
+                # bank_data_acts[i_target] = bank_data_acts[i_target] / (bank_data_acts[i_target].std(dim=0).view(1,-1)+1e-10)
+                bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
 
         if return_gate_status:
             prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
 
         # Update activations of the output layer. The output banks are not gated.
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
+            # if i_output_bank==25:
+            #     pdb.set_trace()
             data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
             output[:,i_output_neuron] = data_act
-
             # if output is None:
             #     output = data_act
             # else:
@@ -817,7 +471,7 @@ class RouteNetOneToOneOutput(nn.Module):
             'idx_input_banks':self.idx_input_banks,
             'bank_conn':self.bank_conn,
             'idx_output_banks':self.idx_output_banks,
-            'n_output_neurons':self.n_output_neurons,
+            # 'n_output_neurons':self.n_output_neurons,
             'n_neurons_per_hidd_bank':self.n_neurons_per_hidd_bank
         }
         torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
