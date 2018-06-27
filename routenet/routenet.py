@@ -290,7 +290,7 @@ class RouteNetOneToOneOutput(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.1
+        self.prob_dropout_data = 0.0
         self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.

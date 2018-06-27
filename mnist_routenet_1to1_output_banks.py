@@ -112,6 +112,39 @@ plt.ion()
 # 
 #############################################################################
 
+#############################################################################
+# FOR ARXIV PAPER, POSSIBLE THINGS TO DEMONSTRATE:
+# 
+# 1. Effiency: Number of operations needed on gated versus ungated model
+#    applied to generic MNIST. First build minimal model without gates (set
+#    gates to gain of 1.0 and bias of 0 to simulate no gates). Strive for
+#    95% test accuracy. Then train with gates using same architecture.
+#    What is efficiency gain?
+#
+# 2. Train model with more banks in the final bank layer than the number
+#    of output nodes. Show that gates that feed the unconnected final banks
+#    are almost always closed even for the test set.
+#
+# 3. Incremental learning without forgetting?
+#    Train on one digit at a time, using samples of all digit types, but 
+#    a cost function that is binary on the digit under training. Is
+#    forgetting reduced compared to an ungated model under the same
+#    training regimen?
+#
+# 4. Spatial routing
+#    Use MNIST digits in larger field. Parcellate inputs into input banks
+#    in 2D grid-wise manner. Maintain a 2D spatial arrangement of banks in layers
+#    but take outputs only from a single row or column. After training,
+#    show "flow" of digit info from its input location to the proper
+#    output bank/node.
+#
+# 5. Spatial routing and counting
+#    Use inputs and architecture similar to in (4) but use multiple instance
+#    of two digit classes in the input images, randomly positioned. Outputs
+#    are two nodes that give the count of the number of instances of each
+#    class. Does the model route in a manner that can accomodate this 
+#    parallelized counting?
+#############################################################################
 
 
 # TODO: Use FF net with limited connectivity. Train/test with MNIST
@@ -175,6 +208,10 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--lambda-nll', type=float, default=1.0, metavar='N',
                     help='weighting on nll loss. weight on gate activation loss is 1-lambda_nll.')
+parser.add_argument('--load', action='store_true', default=False,
+                    help='disables CUDA training')
+parser.add_argument('--no-save', action='store_true', default=False,
+                    help='disables CUDA training')
 args = parser.parse_args()
 
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -540,8 +577,10 @@ param_dict = {'n_input_neurons':n_input_neurons,
             }
 # model = rn.RouteNet(**param_dict)
 # model = rn.RouteNetRecurrentGate(**param_dict)
-model = rn.RouteNetOneToOneOutput(**param_dict)
-# model = rn.RouteNetOneToOneOutput.init_from_files(fullRootFilenameSoftModel)
+if args.load:
+    model = rn.RouteNetOneToOneOutput.init_from_files(fullRootFilenameSoftModel)
+else:
+    model = rn.RouteNetOneToOneOutput(**param_dict)
 if args.cuda:
     model.cuda()
 # model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
@@ -624,7 +663,7 @@ for ep in range(0, args.epochs):
     loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
-    if loss_nll_test[ep] < loss_nll_best:
+    if (loss_nll_test[ep] < loss_nll_best) and not args.no_save:
         loss_nll_best_epoch = ep
         loss_nll_best = loss_nll_test[ep]
         model.save_model(fullRootFilenameSoftModel)
@@ -741,7 +780,7 @@ for i, targ in enumerate(targets_unique):
 
 ## Plot the fraction of open gates in connectivity map,
 ## grouped by target labels.
-print('Plotting connectivity maps. This may take a minute...')
+print('\nPlotting connectivity maps. This may take a minute...')
 targets_unique = np.sort(np.unique(target))
 plt.figure(fn)
 fn = fn + 1
