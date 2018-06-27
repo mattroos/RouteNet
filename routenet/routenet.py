@@ -290,7 +290,7 @@ class RouteNetOneToOneOutput(nn.Module):
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.prob_dropout_data = 0.0
+        self.prob_dropout_data = 0.1
         self.prob_dropout_gate = 0.0
 
         # Create all the hidden nn.Linear modules including those for data and those for gates.
@@ -326,13 +326,13 @@ class RouteNetOneToOneOutput(nn.Module):
                     # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
                     # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
 
-                    # # Works okay?
-                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
-                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
-
-                    # Works okay? And is best for implementation as hard gating.
-                    self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    # Works okay?
+                    self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
                     self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+
+                    # # Works okay? And is best for implementation as hard gating.
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
 
                     self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
                     self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
@@ -451,6 +451,13 @@ class RouteNetOneToOneOutput(nn.Module):
 
         # Should we gate the one-to-one outputs?  Just trying RELU for now...
         output = F.relu(output)
+
+
+        #################################################
+        ## UPDATE IN ALL METHODS!!!
+        total_gate_act /= self.n_bank_conn  # average per connection
+        #################################################
+
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status

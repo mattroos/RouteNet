@@ -433,6 +433,10 @@ def test_softgate():
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
         test_loss, correct, cnt_samples,
         100. * correct / cnt_samples))
+    cm = confusion_matrix(targets_all, pred_all)
+    print('Confusion Matrix:')
+    print(cm)
+    print('\n')
     return test_loss, test_loss_nll, test_loss_gate, test_prob_open_gate, acc, gates_all, targets_all, pred_all
 
 
@@ -520,7 +524,7 @@ test_loader = torch.utils.data.DataLoader(
 
 ## Instantiate network model
 n_layers = 3
-n_banks_per_layer = 10
+n_banks_per_layer = 20
 n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
@@ -694,11 +698,33 @@ plt.title('Percentage of gates open')
 plt.xlabel('Epoch')
 plt.grid()
 
+
 ## Compute and print the test set confusion matrix
 cm = confusion_matrix(target, predicted)
 print('\nConfusion Matrix:')
 print(cm)
 print('\n')
+
+
+## Compute and print...
+# 1. Number and fraction of gates that are never opened.
+ix_conn = np.where(bank_conn)
+n_conn = len(ix_conn[0])
+conn_gate_status = gate_status[:,ix_conn[0],ix_conn[1]]
+ix_never = np.where(~np.any(conn_gate_status, axis=0))[0]
+n_never = len(ix_never)
+print('%d of %d gates (%0.1f%%) are never opened.' % (n_never, n_conn, 100.*n_never/n_conn))
+
+# 2. Number and fraction of gates that are open on average, for a single sample.
+n_sample_open_avg = np.mean(np.sum(conn_gate_status, axis=1))
+print('%d of %d gates (%0.1f%%) are open for individual samples, on average.' % (n_sample_open_avg, n_conn, 100.*n_sample_open_avg/n_conn))
+
+# 3. Of gates that are not never opened, number/fraction that are open on average, for a single sample.
+ix_sometimes = np.where(np.any(conn_gate_status, axis=0))[0]
+n_sample_open_avg2 = np.mean(np.sum(conn_gate_status[ix_sometimes], axis=1))
+print('Excluding gates that are always closed, %d of %d gates (%0.1f%%) are open for individual samples, on average.' % \
+    (n_sample_open_avg2, n_conn-n_never, 100.*n_sample_open_avg2/(n_conn-n_never)))
+
 
 ## Plot the fraction of open gates, grouped by target labels
 targets_unique = np.sort(np.unique(target))
