@@ -1,0 +1,368 @@
+
+==============
+Experiment #1:
+==============
+# 1. Effiency: Number of operations needed on gated versus ungated model
+#    applied to generic MNIST. First build minimal model without gates (set
+#    gates to gain of 1.0 and bias of 0 to simulate no gates). Strive for
+#    95% test accuracy. Then train with gates using same architecture.
+#    What is efficiency gain?
+
+6/27/18
+
+----------------------
+
+MODEL 1-1:
+commit 171a665791c340f49878dd5032cfa24854d135aa
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 1.0 --no-cuda --no-gates
+
+*no gates*, 2 layers, 10 banks per layer, 10 neurons per bank:
+
+n_layers = 2
+n_banks_per_layer = 10
+n_fan_out = 5
+
+'n_neurons_per_hidd_bank':10,
+
+self.prob_dropout_data = 0.0
+self.prob_dropout_gate = 0.0
+
+
+RESULTS:
+
+Test set: Average loss: 0.1844, Accuracy: 9541/10000 (95.4%)
+
+Confusion Matrix:
+[[ 962    1    0    1    1    7    4    3    1    0]
+ [   0 1126    3    0    0    2    2    0    2    0]
+ [   8    6  954   13    6    4    7   11   23    0]
+ [   0    2    5  961    1   18    0    7   10    6]
+ [   1    0    6    2  936    3    5    4    4   21]
+ [   2    3    0   11    1  859    6    2    7    1]
+ [   7    3    1    1    8   17  911    1    9    0]
+ [   1    4   16    5    7    1    0  962    4   28]
+ [   5    6    3    9    6   12    6    5  920    2]
+ [   5    5    0    6   15    7    0    8   13  950]]
+
+0 of 44 gates (0.0%) are never opened.
+24 of 44 gates (56.5%) are open for individual samples, on average.
+Excluding gates that are always closed, 25 of 44 gates (56.8%) are open for individual samples, on average.
+
+----------------------
+
+MODEL 1-2:
+commit 171a665791c340f49878dd5032cfa24854d135aa
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 1.0 --no-cuda --no-gates --seed 2
+
+*no gates*, 2 layers, 10 banks per layer, 5 neurons per bank:
+
+n_layers = 2
+n_banks_per_layer = 10
+n_fan_out = 5
+
+'n_neurons_per_hidd_bank':5,
+
+self.prob_dropout_data = 0.0
+self.prob_dropout_gate = 0.0
+
+
+RESULTS:
+
+Test set: Average loss: 0.2321, Accuracy: 9437/10000 (94.4%)
+
+Confusion Matrix:
+[[ 962    0    2    0    0    5    3    3    5    0]
+ [   0 1122    4    1    0    1    3    0    3    1]
+ [  12    9  938   24    6    4    7    9   20    3]
+ [   0    2   11  944    1   15    1   10   20    6]
+ [   2    0    5    1  921    2    8    5    3   35]
+ [   5    2    0   17    1  847    6    1   11    2]
+ [  10    4    4    1    5   22  909    1    2    0]
+ [   2    8   16    9    2    6    0  956    5   24]
+ [   7    9    2   21    5   17    3    3  899    8]
+ [   8    6    2    4   13   18    0    8   11  939]]
+
+5 of 44 gates (11.4%) are never opened.
+19 of 44 gates (45.4%) are open for individual samples, on average.
+Excluding gates that are always closed, 20 of 39 gates (51.7%) are open for individual samples, on average.
+
+----------------------
+
+MODEL 1-3:
+commit 171a665791c340f49878dd5032cfa24854d135aa
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 1.0 --no-cuda --no-gates --seed 4
+	then continued learning for 10 more epochs...
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 10 --lambda-nll 1.0 --no-cuda --no-gates --seed 4 --load
+
+*no gates*, 2 layers, 10 banks per layer, 3 neurons per bank:
+
+n_layers = 2
+n_banks_per_layer = 10
+n_fan_out = 5
+
+'n_neurons_per_hidd_bank':3,
+
+self.prob_dropout_data = 0.0
+self.prob_dropout_gate = 0.0
+
+
+RESULTS:
+* It is very difficult to get this model (one with low #neurons/bank) to train such that
+all classes are predicted. Typically 1-4 classes are never predicted.  This model managed
+to learn well for seed 4, but under most seeds, one or more classes are not learned.
+
+Test set: Average loss: 0.2338, Accuracy: 9449/10000 (94.5%)
+
+Confusion Matrix:
+[[ 961    0    1    3    1    4    6    3    1    0]
+ [   0 1124    4    0    0    1    5    1    0    0]
+ [  11   12  955   17    6    1    4   12   11    3]
+ [   1    0    9  956    1   12    1   14    7    9]
+ [   3    0    4    2  924    4    9    5    1   30]
+ [   4    2    1   17    4  843    8    3    4    6]
+ [  14    3    3    3    4   17  910    1    3    0]
+ [   2   10   15    3    4    3    0  965    2   24]
+ [   8    6    2   19    6   30    9    7  881    6]
+ [  10    6    0   11   14   11    0   15   12  930]]
+
+2 of 44 gates (4.5%) are never opened.
+20 of 44 gates (47.5%) are open for individual samples, on average.
+Excluding gates that are always closed, 21 of 42 gates (50.9%) are open for individual samples, on average.
+
+----------------------
+
+MODEL 1-4:
+commit 171a665791c340f49878dd5032cfa24854d135aa
+# tried seeds 0 to 9
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 1.0 --no-cuda --no-gates --seed 9
+
+*no gates*, 2 layers, 10 banks per layer, 2 neurons per bank:
+
+n_layers = 2
+n_banks_per_layer = 10
+n_fan_out = 5
+
+'n_neurons_per_hidd_bank':2,
+
+self.prob_dropout_data = 0.0
+self.prob_dropout_gate = 0.0
+
+RESULTS:
+* It is very difficult to get this model (one with low #neurons/bank) to train such that
+all classes are predicted. Typically 1-4 classes are never predicted.  This was the case
+for seed numbers 0 to 9. Below is the best result, from seed 9.
+
+Test set: Average loss: 0.5329, Accuracy: 8269/10000 (82.7%)
+
+Confusion Matrix:
+[[957   0   0   1   0  14   5   1   2   0]
+ [664   0  24 121 106  35  18 101  40  26]
+ [ 12   0 944  21   6   6   9   7  25   2]
+ [  2   0  11 941   0  25   0  10  15   6]
+ [  2   0   6   2 920   6   9   3   1  33]
+ [  5   0   0  20  13 818  13   3  14   6]
+ [  8   0   4   0   7  31 902   1   4   1]
+ [  2   0  18   9   7   2   0 947   5  38]
+ [  5   0   4  10   6  33   5   6 901   4]
+ [  9   0   1   8  22  15   0  10   5 939]]
+
+5 of 44 gates (11.4%) are never opened.
+18 of 44 gates (41.6%) are open for individual samples, on average.
+Excluding gates that are always closed, 18 of 39 gates (47.5%) are open for individual samples, on average.
+
+----------------------
+
+MODEL 2-2:
+commit 171a665791c340f49878dd5032cfa24854d135aa
+
+First started with Model 1-2:
+	ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 1.0 --no-cuda --no-gates --seed 2
+Then continued training with gates:
+	ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 20 --lambda-nll 0.75 --no-cuda --no-save --seed 2 --load
+
+*with gates*, 2 layers, 10 banks per layer, 5 neurons per bank:
+
+n_layers = 2
+n_banks_per_layer = 10
+n_fan_out = 5
+
+'n_neurons_per_hidd_bank':5,
+
+self.prob_dropout_data = 0.0
+self.prob_dropout_gate = 0.0
+
+
+RESULTS (after 20 epochs of stage 2 (w/ gates) training):
+
+Test set: Average loss: 0.2285, Accuracy: 9456/10000 (94.6%)
+
+Confusion Matrix:
+[[ 960    0    1    0    0    4    5    4    5    1]
+ [   0 1122    4    1    0    1    2    1    4    0]
+ [  13    8  939   30    5    2    8    7   19    1]
+ [   1    1    8  948    2   17    3    6   18    6]
+ [   2    0    7    3  927    1    7    9    4   22]
+ [   5    2    0   16    2  840    8    1   14    4]
+ [   6    3    5    1    6   21  915    0    1    0]
+ [   2    4   12    9    4    6    0  964    6   21]
+ [   6    4    4   28    5   15    1    5  896   10]
+ [   3    7    3    7   11   14    0   11    8  945]]
+
+3 of 44 gates (6.8%) are never opened.
+9 of 44 gates (21.7%) are open for individual samples, on average.
+Excluding gates that are always closed, 9 of 41 gates (22.9%) are open for individual samples, on average. 
+
+
+RESULTS (after 40 epochs of stage 2 (w/ gates) training):
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 40 --lambda-nll 0.75 --no-cuda --no-save --seed 2 --load
+
+Test set: Average loss: 0.2589, Accuracy: 9442/10000 (94.4%)
+
+Confusion Matrix:
+[[ 964    0    1    0    0    3    5    2    3    2]
+ [   0 1119    5    1    0    1    3    1    5    0]
+ [  14    9  939   28    4    0    9    7   21    1]
+ [   1    0   10  948    2   16    3    5   17    8]
+ [   2    0    7    2  932    3    7    8    4   17]
+ [   3    2    0   16    2  839   10    2   15    3]
+ [   5    3    5    0    4   21  918    0    2    0]
+ [   2    5   14    6    7    5    0  959    7   23]
+ [   5    3    4   28    6   22    1    5  890   10]
+ [   3    7    4   10   11   13    0   12   15  934]]
+
+2 of 44 gates (4.5%) are never opened.
+7 of 44 gates (17.3%) are open for individual samples, on average.
+Excluding gates that are always closed, 7 of 42 gates (18.0%) are open for individual samples, on average.
+
+* After 40 epochs, the model is still reducing the number of open gates...
+In [1]: prob_open_gate_test
+array([ 0.43888864,  0.40703182,  0.38291591,  0.36106818,  0.34230227,
+        0.32211818,  0.30865227,  0.29794773,  0.28949091,  0.27699773,
+        0.27048409,  0.26470682,  0.25561364,  0.25116364,  0.247075  ,
+        0.24380909,  0.23925909,  0.23553182,  0.23001364,  0.22439545,
+        0.22092045,  0.21807273,  0.21568636,  0.21314091,  0.21042273,
+        0.20793636,  0.20518182,  0.20251136,  0.19957727,  0.19522045,
+        0.19318636,  0.19133182,  0.18836818,  0.18670909,  0.18441818,
+        0.18141364,  0.18005455,  0.17834773,  0.17684545,  0.17524091])
+
+
+RESULTS (after 40 epochs of stage 2 (w/ gates) training, and a stronger weighting on gate loss):
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 40 --lambda-nll 0.5 --no-cuda --no-save --seed 2 --load
+
+Test set: Average loss: 0.1828, Accuracy: 9380/10000 (93.8%)
+
+Confusion Matrix:
+[[ 961    0    1    0    1    4    6    1    5    1]
+ [   0 1120    3    1    0    2    5    1    3    0]
+ [  12    8  939   26    2    4   12    7   22    0]
+ [   2    1   11  932    4   20    5    7   21    7]
+ [   3    2    6    2  910    6    8   13    3   29]
+ [   4    1    1   17    3  839   10    2   10    5]
+ [   7    3    6    0    5   35  898    0    4    0]
+ [   3    6   14    6    7    6    0  953    6   27]
+ [   4    4    6   27    5   20    3    5  890   10]
+ [   5    6    4    5    9   17    1   11   13  938]]
+
+4 of 44 gates (9.1%) are never opened.
+4 of 44 gates (10.5%) are open for individual samples, on average.
+Excluding gates that are always closed, 4 of 40 gates (11.1%) are open for individual samples, on average.
+
+* Some of the slight reduction in classification performance may be due to
+overtraining on the training set, rather than due to the heavy gating. The
+data below indicate that performance on the training set contiues to go up
+as that of the test set goes down. Some dropout may help with this.
+
+In [1]: prob_open_gate_test
+array([ 0.392525  ,  0.33416591,  0.28745455,  0.25966591,  0.23428409,
+        0.21759773,  0.20591364,  0.19141136,  0.18065909,  0.17083182,
+        0.16264091,  0.15683409,  0.15233636,  0.14680682,  0.13903636,
+        0.13653636,  0.13398864,  0.13191136,  0.129225  ,  0.12768864,
+        0.12567273,  0.12413636,  0.12283182,  0.12029773,  0.11881136,
+        0.11762045,  0.11671591,  0.11536364,  0.1144    ,  0.11327727,
+        0.11247955,  0.11153182,  0.11045227,  0.10975227,  0.10884091,
+        0.10785   ,  0.10724318,  0.10647727,  0.10555455,  0.10514545])
+
+In [2]: acc_train
+array([ 96.55555556,  96.37373737,  96.44444444,  96.44444444,
+        96.48484848,  96.46464646,  96.51515152,  96.61616162,
+        96.77777778,  96.82828283,  96.95959596,  97.02020202,
+        97.1010101 ,  97.17171717,  97.2020202 ,  97.33333333,
+        97.38383838,  97.4040404 ,  97.44444444,  97.49494949,
+        97.61616162,  97.61616162,  97.65656566,  97.6969697 ,
+        97.74747475,  97.75757576,  97.76767677,  97.76767677,
+        97.80808081,  97.87878788,  97.93939394,  97.93939394,
+        97.96969697,  98.04040404,  97.95959596,  98.12121212,
+        98.14141414,  98.19191919,  98.24242424,  98.25252525])
+
+In [3]: acc_test
+array([ 94.11,  94.08,  94.19,  94.18,  94.28,  94.22,  94.24,  94.19,
+        94.19,  94.17,  94.19,  94.11,  94.18,  94.14,  94.15,  94.12,
+        94.1 ,  94.04,  94.06,  94.1 ,  94.07,  94.1 ,  94.  ,  94.  ,
+        93.94,  93.96,  93.97,  93.99,  93.92,  93.9 ,  93.89,  93.76,
+        93.77,  93.71,  93.86,  93.75,  93.75,  93.74,  93.84,  93.8 ])
+
+
+RESULTS (after 60 epochs of training from scratch (w/ gates):
+ipython -i mnist_routenet_1to1_output_banks.py -- --epochs 60 --lambda-nll 0.75 --no-cuda --seed 2
+
+self.prob_dropout_data = 0.1
+self.prob_dropout_gate = 0.1
+
+Test set: Average loss: 0.2324, Accuracy: 9481/10000 (94.8%)
+
+Confusion Matrix:
+[[ 957    0    1    3    0    5    8    2    2    2]
+ [   0 1119    5    1    0    1    4    1    4    0]
+ [   3    5  962   13    7    5    6   12   19    0]
+ [   0    1   15  944    1   16    1    9   19    4]
+ [   2    2    3    0  929    3    9    6    3   25]
+ [   5    3    3   13    2  846    6    1   11    2]
+ [   7    3    4    3    8   20  905    0    8    0]
+ [   0    7   13    7    3    2    0  973    4   19]
+ [   6    7    5    8    5   28    2    4  902    7]
+ [   5    5    3    7   14    9    1   12    9  944]]
+
+5 of 44 gates (11.4%) are never opened.
+5 of 44 gates (13.5%) are open for individual samples, on average.
+Excluding gates that are always closed, 5 of 39 gates (15.3%) are open for individual samples, on average.
+
+In [1]: prob_open_gate_test
+array([ 0.43310682,  0.40912727,  0.39237955,  0.36301364,  0.33944318,
+        0.31369773,  0.28950227,  0.27835682,  0.26893864,  0.26051364,
+        0.24921364,  0.24174091,  0.23658182,  0.22893409,  0.21871818,
+        0.21277727,  0.20929773,  0.20485909,  0.19892273,  0.19512955,
+        0.19393182,  0.19030682,  0.18710682,  0.18419091,  0.18120227,
+        0.17825909,  0.17709091,  0.17455909,  0.17349545,  0.1725    ,
+        0.17080682,  0.16759773,  0.16725682,  0.16431364,  0.16650455,
+        0.16259318,  0.16075455,  0.16055455,  0.16312955,  0.16009318,
+        0.15858409,  0.15695682,  0.15622045,  0.15518636,  0.15546364,
+        0.15350455,  0.15325227,  0.152175  ,  0.14977273,  0.15075909,
+        0.15083409,  0.14937273,  0.15017045,  0.14551136,  0.14886818,
+        0.14743409,  0.14732045,  0.14842955,  0.1454    ,  0.14565   ])
+
+In [2]: acc_train
+array([ 81.21212121,  85.54545455,  87.93939394,  88.98989899,
+        89.7979798 ,  90.21212121,  91.05050505,  91.31313131,
+        91.46464646,  91.94949495,  92.24242424,  92.52525253,
+        92.65656566,  92.63636364,  92.92929293,  93.22222222,
+        93.41414141,  93.41414141,  93.6969697 ,  94.21212121,
+        93.83838384,  93.95959596,  93.78787879,  94.13131313,
+        94.41414141,  94.61616162,  94.52525253,  94.60606061,
+        94.46464646,  94.96969697,  94.86868687,  94.84848485,
+        94.86868687,  95.09090909,  95.45454545,  95.29292929,
+        95.21212121,  95.29292929,  95.28282828,  95.65656566,
+        95.15151515,  95.47474747,  95.66666667,  95.57575758,
+        95.6969697 ,  95.6969697 ,  95.66666667,  95.66666667,
+        95.63636364,  95.70707071,  95.78787879,  96.19191919,
+        95.86868687,  95.91919192,  96.04040404,  96.07070707,
+        96.25252525,  96.07070707,  96.26262626,  96.26262626])
+
+In [3]: acc_test
+array([ 85.62,  89.06,  90.25,  91.06,  91.39,  91.7 ,  92.  ,  92.37,
+        92.66,  92.76,  92.94,  92.97,  93.23,  93.19,  93.44,  93.62,
+        93.64,  93.78,  93.85,  93.95,  94.04,  94.05,  94.07,  94.15,
+        94.16,  94.14,  94.2 ,  94.22,  94.18,  94.14,  94.22,  94.45,
+        94.31,  94.57,  94.49,  94.54,  94.63,  94.63,  94.57,  94.5 ,
+        94.61,  94.59,  94.73,  94.85,  94.73,  94.84,  94.79,  94.8 ,
+        94.81,  94.85,  94.79,  94.92,  94.74,  94.6 ,  94.68,  94.93,
+        94.74,  94.85,  94.79,  94.81])
