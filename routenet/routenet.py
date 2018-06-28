@@ -58,8 +58,7 @@ def make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out):
     # that projects rightward in a schematic), centered at the same vertical
     # level as the source bank.
     
-    # Build connectivity sub-matrix and insert it into the full
-    # connectivity matrix for each pair of connected layers.
+    # Build connectivity sub-matrix for single pair of adjacent layers
     row = np.full(n_banks_per_layer, False)
     col = np.full(n_banks_per_layer, False)
     n_fan_down = n_fan_out/2
@@ -69,6 +68,46 @@ def make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out):
     sub_conn = toeplitz(row, col)
 
     # Get locations for submatrices
+    i_upper = np.arange(n_layers-1) * n_banks_per_layer
+    i_left = np.arange(1,n_layers) * n_banks_per_layer
+
+    # Create empty matrix and insert submatrices
+    n_banks = n_layers * n_banks_per_layer
+    bank_conn = np.full((n_banks, n_banks), False)
+    for iu, il in zip(i_upper, i_left):
+        bank_conn[iu:iu+n_banks_per_layer, il:il+n_banks_per_layer] = sub_conn
+
+    return bank_conn
+
+
+def make_conn_matrix_ff_part_2d(n_layers, n_banks_per_layer_per_side, n_fan_out):
+    # Create connectivity matrix for layered feed-forward hierarchy
+    # with 2-D bank arrangement in each layer and limited fan-out. Assumes
+    # same number of banks in each layer, with a square (k x k) arrangement.
+    #
+    # n_banks_per_layer_per_side is a scalar. All layers have the same number of banks.
+    # n_fan_out is the number of output banks projected to to by an input bank
+    # in each dimension.
+    # Connections are spatially arranged such that the n_fan_out banks are
+    # as close as possible to the input bank, centered at the same (i,j) position
+    # as the source bank.
+    
+    n_banks_per_layer = n_banks_per_layer_per_side**2
+    assert np.mod(n_fan_out,2)==1, 'make_conn_matrix_ff_part_2d(): n_fan_out must be an odd scalar'
+    fh = (int(n_fan_out)-1)/2   # length of one-side ("half") of fan-out
+
+    # Build connectivity sub-matrix for single pair of adjacent layers.
+    # Probably a better way to do this using toeplitz().
+    sub_conn = np.full((n_banks_per_layer, n_banks_per_layer), False)
+    a = np.expand_dims(np.arange(-fh,fh+1), 1)
+    b = np.expand_dims(np.arange(-fh,fh+1) *n_banks_per_layer_per_side, 0)
+    i_src_offsets = (a+b).flatten()
+    for i_targ in range(0, n_banks_per_layer):
+        i_src = i_src_offsets + i_targ
+        idx_valid = np.where((i_src>=0) & (i_src<n_banks_per_layer))[0]
+        sub_conn[i_src[idx_valid], i_targ] = True
+
+    # Get locations for submatrices in larger matrix
     i_upper = np.arange(n_layers-1) * n_banks_per_layer
     i_left = np.arange(1,n_layers) * n_banks_per_layer
 
@@ -246,6 +285,8 @@ class RouteNet(nn.Module):
             else:
                 output += data_act
 
+        total_gate_act /= self.n_bank_conn  # average per connection
+
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
         else:
@@ -265,6 +306,117 @@ class RouteNet(nn.Module):
         }
         torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
         np.save('%s.npy' % (model_base_filename), param_dict)
+
+
+class RouteNetOneToOneOutputGroupedInputs(nn.Module):
+    # RouteNet that has one output bank per output node
+    # and there are multiple groups of inputs, each of
+    # which is connected to a single input bank. Each
+    # input group must have the same number of neurons.
+    # NOTE: In this class, the length of idx_input_banks
+    # defines the expected number of input groups, that is,
+    # the length of the list, x, in the forward methods.
+    def __init__(self, n_neurons_per_input_group, idx_input_banks, bank_conn, 
+                 idx_output_banks, n_neurons_per_hidd_bank=10):
+        super(RouteNetOneToOneOutputGroupedInputs, self).__init__()
+
+        self.n_neurons_per_input_group = n_neurons_per_input_group
+        self.idx_input_banks = idx_input_banks
+        self.bank_conn = bank_conn
+        self.idx_output_banks = idx_output_banks
+        self.n_output_neurons = len(idx_output_banks)
+        self.n_neurons_per_hidd_bank = n_neurons_per_hidd_bank
+
+        # "bank_conn" defines the connectivity of the banks. This is an NxN boolean matrix for 
+        # which a True value in the i,j-th entry indictes that bank i is a source of input to
+        # bank j. The matrix could define any structure of banks, including for example, a
+        # feedforward layered structure or a structure in which all banks are connected.
+        n_hidd_banks = bank_conn.shape[0]
+        assert (len(bank_conn.shape) == 2), "bank_conn connectivity matrix must have two dimensions of equal size."
+        assert (bank_conn.shape[1] == n_hidd_banks), "bank_conn connectivity matrix must have two dimensions of equal size."
+
+        n_input_banks = len(idx_input_banks)
+
+        self.n_hidd_banks = n_hidd_banks
+        self.n_bank_conn = np.sum(bank_conn)
+        self.n_input_banks = n_input_banks
+        self.prob_dropout_data = 0.0
+        self.prob_dropout_gate = 0.0
+
+        # Create all the hidden nn.Linear modules including those for data and those for gates.
+        # Do not use a bias, so hard gating will be equivalent to soft gating.
+        # Use dropout?  Apply same single dropout to each source?  Each source/target combo?
+        # Each source/target combo and each source/gate combo?
+        self.hidden2hidden_gate = nn.ModuleList()
+        self.hidden2hidden_data = nn.ModuleList()
+        self.hidden2hidden_gate_dropout = nn.ModuleList()
+        self.hidden2hidden_data_dropout = nn.ModuleList()
+        self.hidden_batch_scale = nn.ModuleList()
+        for i_source in range(n_hidd_banks):
+            self.hidden2hidden_gate.append(nn.ModuleList())
+            self.hidden2hidden_data.append(nn.ModuleList())
+            self.hidden2hidden_gate_dropout.append(nn.ModuleList())
+            self.hidden2hidden_data_dropout.append(nn.ModuleList())
+            # self.hidden_batch_scale.append(nn.BatchNorm1d(self.n_neurons_per_hidd_bank, affine=True))  # actually linear, not affine, since no bias
+            self.hidden_batch_scale.append(BatchScale(self.n_neurons_per_hidd_bank)) # Can't use BatchNorm: batch shifting is incompatible with hard gating.
+            for i_target in range(n_hidd_banks):
+                if bank_conn[i_source, i_target]:
+                    # To have functional equivalence between hard and soft gating, we don't
+                    # necessarily need the gate layers to be unbiased. What we need is for
+                    # either the data layers or the gate layers to be unbiased. In that
+                    # case, if the source bank is inactive (all zeros), then the
+                    # gated-multiplied weighted sum at the target bank will be zeros either
+                    # because the gate value is zero (unbiased gate layer) or the weighted
+                    # data sum will be zero (unbiased data layer).
+                    # For unknown reasons at this time, the model learns as desired when the
+                    # gate layers are biased but the data layers are not. Not clear why it
+                    # doesn't learn as well when the reverse is true.
+
+                    # # Works, but cheating. Data nodes could fire even if gated off. Use bias <=0 only?
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
+
+                    # Works okay?
+                    self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
+                    self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+
+                    # # Works okay? And is best for implementation as hard gating.
+                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
+                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
+
+                    self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
+                    self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
+                else:
+                    self.hidden2hidden_gate[i_source].append(None)
+                    self.hidden2hidden_data[i_source].append(None)
+                    self.hidden2hidden_gate_dropout[i_source].append(None)
+                    self.hidden2hidden_data_dropout[i_source].append(None)
+
+        # Create the connections between inputs and banks that receive inputs.
+        # Not using gates on the inputs, so can use BatchNorm rather than BatchScale.
+        self.input_batch_norm = nn.ModuleList()
+        self.input2hidden_data = nn.ModuleList()
+        for i_input_bank in range(n_input_banks):
+            self.input_batch_norm[i_input_bank].append(nn.BatchNorm1d(self.n_input_neurons))
+            self.input2hidden_data[i_input_bank].append(nn.Linear(n_input_neurons, n_neurons_per_hidd_bank, bias=True))
+
+        # self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
+        # self.input2hidden = nn.ModuleList()
+        # for i_input_bank in range(n_hidd_banks):
+        #     self.input2hidden.append(None)
+        # for i_input_bank in idx_input_banks:
+        #     self.input2hidden[i_input_bank] = nn.Linear(n_input_neurons, n_neurons_per_hidd_bank, bias=True)
+
+
+
+        # Create the connections between output banks and network output layer.
+        # Do not use a bias, so hard gating will be equivalent to soft gating.
+        self.hidden2output = nn.ModuleList()
+        for i_output_bank in range(n_hidd_banks):
+            self.hidden2output.append(None)
+        for i_output_bank in idx_output_banks:
+            self.hidden2output[i_output_bank] = nn.Linear(n_neurons_per_hidd_bank, 1, bias=False)
+
 
 
 class RouteNetOneToOneOutput(nn.Module):
@@ -459,12 +611,7 @@ class RouteNetOneToOneOutput(nn.Module):
         # Should we gate the one-to-one outputs?  Just trying RELU for now...
         output = F.relu(output)
 
-
-        #################################################
-        ## UPDATE IN ALL METHODS!!!
         total_gate_act /= self.n_bank_conn  # average per connection
-        #################################################
-
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
@@ -652,6 +799,8 @@ class RouteNetRecurrentGate(nn.Module):
             else:
                 output += data_act
 
+        total_gate_act /= self.n_bank_conn  # average per connection
+
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
         else:
@@ -755,6 +904,8 @@ class RouteNetRecurrentGate(nn.Module):
                 output = data_act
             else:
                 output += data_act
+
+        total_gate_act /= self.n_bank_conn  # average per connection
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
@@ -875,6 +1026,8 @@ class RouteNetRecurrentGate(nn.Module):
                 output = data_act
             else:
                 output += data_act
+
+        total_gate_act /= self.n_bank_conn  # average per connection
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
