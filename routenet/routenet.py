@@ -80,27 +80,28 @@ def make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out):
     return bank_conn
 
 
-def make_conn_matrix_ff_part_2d(n_layers, n_banks_per_layer_per_side, n_fan_out):
+def make_conn_matrix_ff_part_2d(n_layers, n_banks_per_layer_per_dim, n_fan_out_per_dim):
     # Create connectivity matrix for layered feed-forward hierarchy
     # with 2-D bank arrangement in each layer and limited fan-out. Assumes
     # same number of banks in each layer, with a square (k x k) arrangement.
     #
-    # n_banks_per_layer_per_side is a scalar. All layers have the same number of banks.
-    # n_fan_out is the number of output banks projected to to by an input bank
+    # n_banks_per_layer_per_dim is a scalar. All layers have the same number of banks.
+    # n_fan_out_per_dim is the number of output banks projected to by an input bank
     # in each dimension.
-    # Connections are spatially arranged such that the n_fan_out banks are
+    #
+    # Connections are spatially arranged such that the n_fan_out_per_dim**2 banks are
     # as close as possible to the input bank, centered at the same (i,j) position
     # as the source bank.
     
-    n_banks_per_layer = n_banks_per_layer_per_side**2
-    assert np.mod(n_fan_out,2)==1, 'make_conn_matrix_ff_part_2d(): n_fan_out must be an odd scalar'
-    fh = (int(n_fan_out)-1)/2   # length of one-side ("half") of fan-out
+    n_banks_per_layer = n_banks_per_layer_per_dim**2
+    assert np.mod(n_fan_out_per_dim,2)==1, 'make_conn_matrix_ff_part_2d(): n_fan_out_per_dim must be an odd scalar'
+    fh = (int(n_fan_out_per_dim)-1)/2   # length of one-side ("half") of fan-out
 
     # Build connectivity sub-matrix for single pair of adjacent layers.
     # Probably a better way to do this using toeplitz().
     sub_conn = np.full((n_banks_per_layer, n_banks_per_layer), False)
     a = np.expand_dims(np.arange(-fh,fh+1), 1)
-    b = np.expand_dims(np.arange(-fh,fh+1) *n_banks_per_layer_per_side, 0)
+    b = np.expand_dims(np.arange(-fh,fh+1) *n_banks_per_layer_per_dim, 0)
     i_src_offsets = (a+b).flatten()
     for i_targ in range(0, n_banks_per_layer):
         i_src = i_src_offsets + i_targ
@@ -335,11 +336,11 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         assert (len(bank_conn.shape) == 2), "bank_conn connectivity matrix must have two dimensions of equal size."
         assert (bank_conn.shape[1] == n_hidd_banks), "bank_conn connectivity matrix must have two dimensions of equal size."
 
-        n_input_banks = len(idx_input_banks)
+        n_input_groups = len(idx_input_banks)
 
         self.n_hidd_banks = n_hidd_banks
         self.n_bank_conn = np.sum(bank_conn)
-        self.n_input_banks = n_input_banks
+        self.n_input_groups = n_input_groups
         self.prob_dropout_data = 0.0
         self.prob_dropout_gate = 0.0
 
@@ -396,18 +397,9 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         # Not using gates on the inputs, so can use BatchNorm rather than BatchScale.
         self.input_batch_norm = nn.ModuleList()
         self.input2hidden_data = nn.ModuleList()
-        for i_input_bank in range(n_input_banks):
-            self.input_batch_norm[i_input_bank].append(nn.BatchNorm1d(self.n_input_neurons))
-            self.input2hidden_data[i_input_bank].append(nn.Linear(n_input_neurons, n_neurons_per_hidd_bank, bias=True))
-
-        # self.input_batch_norm = nn.BatchNorm1d(self.n_input_neurons)
-        # self.input2hidden = nn.ModuleList()
-        # for i_input_bank in range(n_hidd_banks):
-        #     self.input2hidden.append(None)
-        # for i_input_bank in idx_input_banks:
-        #     self.input2hidden[i_input_bank] = nn.Linear(n_input_neurons, n_neurons_per_hidd_bank, bias=True)
-
-
+        for i_input_group in range(n_input_groups):
+            self.input_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_input_group))
+            self.input2hidden_data.append(nn.Linear(self.n_neurons_per_input_group, n_neurons_per_hidd_bank, bias=True))
 
         # Create the connections between output banks and network output layer.
         # Do not use a bias, so hard gating will be equivalent to soft gating.
@@ -417,6 +409,129 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         for i_output_bank in idx_output_banks:
             self.hidden2output[i_output_bank] = nn.Linear(n_neurons_per_hidd_bank, 1, bias=False)
 
+    @classmethod
+    def init_from_files(cls, model_base_filename):
+        # Load model metaparameters, instantiate a model with that architecture,
+        # load model weights, and set the model weights.
+        param_dict = np.load('%s.npy' % (model_base_filename)).item()
+        net = cls(**param_dict)
+        # if b_use_cuda:
+        #     net = net.cuda()
+        net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        return net
+
+    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False):
+        # Unlike the main forward() method, this one uses soft gates thus
+        # allowing batches to be used in training. The notion is that this
+        # could be used for fast pre-training, and then forward_hardgate()
+        # used for inference on single examples/samples, or possibly for final,
+        # fine-tuning training with hard gating.
+
+        batch_size = x[0].size()[0]
+        for i in range(self.n_input_groups):
+            x[i] = x[i].view(batch_size, -1)  # Flatten across all dimensions except batch dimension
+
+        bank_data_acts = np.full(self.n_hidd_banks, None)
+        n_open_gates = 0
+        total_gate_act = Variable(torch.zeros(batch_size,1))
+        output = Variable(torch.zeros(batch_size,self.n_output_neurons))
+        if b_use_cuda:
+            total_gate_act = total_gate_act.cuda()
+
+        if return_gate_status:
+            gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
+        # Batch norm the inputs.
+        if b_batch_norm:
+            for i_input_group in range(self.n_input_groups):
+                x[i_input_group] = self.input_batch_norm[i_input_group](x[i_input_group])
+
+        # Update activations of all the input banks. These are not gated.
+        for i_input_group, idx_input_bank in enumerate(self.idx_input_banks):
+            bank_data_acts[idx_input_bank] = F.relu(self.input2hidden_data[i_input_group](x[i_input_group]))
+
+        # Update activations of all the hidden banks. These are soft gated.
+        for i_target in range(self.n_hidd_banks):
+            # Get list of source banks that are connected to this target bank
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+
+            # Compute gate values for each of the input banks, and multiply
+            # by the incoming activations.
+            for idx, i_source in enumerate(idx_source):
+                dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
+                gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
+                
+                ## Apply hard sigmoid or RELU
+                # gate_act = F.relu(gate_act)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+
+                if not b_no_gates:
+                    total_gate_act += gate_act
+
+                if return_gate_status:
+                    # Gate status is set to True (open) only if both the gate node is
+                    # greater than zero and one or more activations from the source
+                    # bank are non-zero.  I.e., if the gate is open but all the data
+                    # inputs are zeros, this is functionally the same as a closed gate.
+                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
+                                                         np.any(bank_data_acts[i_source].data, axis=1)
+                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                    n_open_gates += np.sum(z)
+
+                dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
+                data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+
+                if bank_data_acts[i_target] is None:
+                    if b_no_gates:
+                        bank_data_acts[i_target] = data_act
+                    else:
+                        bank_data_acts[i_target] = gate_act * data_act
+                else:
+                    if b_no_gates:
+                        bank_data_acts[i_target] += data_act
+                    else:
+                        bank_data_acts[i_target] += gate_act * data_act
+
+            pdb.set_trace()
+            bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+            if b_batch_norm:
+                bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
+
+        if return_gate_status:
+            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+
+        # Update activations of the output layer. The output banks are not gated.
+        for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
+            data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
+            output[:,i_output_neuron] = data_act
+            # if output is None:
+            #     output = data_act
+            # else:
+            #     output += data_act
+
+        # Should we gate the one-to-one outputs?  Just trying RELU for now...
+        output = F.relu(output)
+
+        total_gate_act /= self.n_bank_conn  # average per connection
+
+        if return_gate_status:
+            return output, total_gate_act, prob_open_gate, gate_status
+        else:
+            return output, total_gate_act
+
+    def save_model(self, model_base_filename):
+        # Just saving the model, not the optimizer state. To stop and 
+        # resume training, optimizer state needs to be saved as well.
+        # https://discuss.pytorch.org/t/saving-and-loading-a-model-in-pytorch/2610
+        param_dict = {
+            'n_neurons_per_input_group':self.n_neurons_per_input_group,
+            'idx_input_banks':self.idx_input_banks,
+            'bank_conn':self.bank_conn,
+            'idx_output_banks':self.idx_output_banks,
+            'n_neurons_per_hidd_bank':self.n_neurons_per_hidd_bank
+        }
+        torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
+        np.save('%s.npy' % (model_base_filename), param_dict)
 
 
 class RouteNetOneToOneOutput(nn.Module):
@@ -534,7 +649,7 @@ class RouteNetOneToOneOutput(nn.Module):
 
         bank_data_acts = np.full(self.n_hidd_banks, None)
         n_open_gates = 0
-        total_gate_act = 0
+        total_gate_act = Variable(torch.zeros(batch_size,1))
         output = Variable(torch.zeros(batch_size,self.n_output_neurons))
         if b_use_cuda:
             total_gate_act = total_gate_act.cuda()
@@ -632,19 +747,19 @@ class RouteNetOneToOneOutput(nn.Module):
         torch.save(self.state_dict(), '%s.tch' % (model_base_filename))
         np.save('%s.npy' % (model_base_filename), param_dict)
 
-    def bias_limit(self, a_min, a_max):
-        # Limit biases of hidden banks
-        for i_target in range(self.n_hidd_banks):
-            idx_source = np.where(self.bank_conn[:,i_target])[0]
-            for i_source in idx_source:
-                if self.hidden2hidden_data[i_source][i_target].bias is not None:
-                    self.hidden2hidden_data[i_source][i_target].bias.data = \
-                        np.clip(self.hidden2hidden_data[i_source][i_target].bias.data, a_min, a_max)
-        # Limit biases of output banks
-        for i_output_bank in self.idx_output_banks:
-            if self.hidden2output[i_output_bank].bias is not None:
-                self.hidden2output[i_output_bank].bias.data = \
-                    np.clip(self.hidden2output[i_output_bank].bias.data, a_min, a_max)
+    # def bias_limit(self, a_min, a_max):
+    #     # Limit biases of hidden banks
+    #     for i_target in range(self.n_hidd_banks):
+    #         idx_source = np.where(self.bank_conn[:,i_target])[0]
+    #         for i_source in idx_source:
+    #             if self.hidden2hidden_data[i_source][i_target].bias is not None:
+    #                 self.hidden2hidden_data[i_source][i_target].bias.data = \
+    #                     np.clip(self.hidden2hidden_data[i_source][i_target].bias.data, a_min, a_max)
+    #     # Limit biases of output banks
+    #     for i_output_bank in self.idx_output_banks:
+    #         if self.hidden2output[i_output_bank].bias is not None:
+    #             self.hidden2output[i_output_bank].bias.data = \
+    #                 np.clip(self.hidden2output[i_output_bank].bias.data, a_min, a_max)
 
 
 class RouteNetRecurrentGate(nn.Module):
@@ -1077,13 +1192,17 @@ class RandomLocationMNIST(data.Dataset):
     training_file = 'training.pt'
     test_file = 'test.pt'
 
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, xy_resolution=10):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, expanded_size=56, group_size_1D=56/4, xy_resolution=10, rotate=False):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.target_transform = target_transform
         self.train = train  # training set or test set
         self.expanded_size = expanded_size
+        self.xy_resolution = xy_resolution
         self.pad_each_side = expanded_size - 28
+        self.group_size_per_side = group_size_1D
+        self.groups_per_side = expanded_size/group_size_1D
+        self.rotate = rotate
 
         if download:
             self.download()
@@ -1112,12 +1231,17 @@ class RandomLocationMNIST(data.Dataset):
         else:
             img, target = self.test_data[index], self.test_labels[index]
 
+        if self.rotate:
+            img = img.transpose_(1,0)
+            
         # MJR:
         # Padding and random cropping the image here, rather than with a transform.
         # After cropping, image size will be 28+pad_each_side, on each side.
         img = np.pad(img.numpy(), self.pad_each_side, 'constant', constant_values=0)
-        left = random.randint(0, self.pad_each_side-1)
-        top = random.randint(0, self.pad_each_side-1)
+        # left = random.randint(0, self.pad_each_side-1)
+        # top = random.randint(0, self.pad_each_side-1)
+        left = random.randint(0, self.pad_each_side)
+        top = random.randint(0, self.pad_each_side)
         img = img[top:top+self.expanded_size, left:left+self.expanded_size]
         img = torch.ByteTensor(img)
 
@@ -1128,6 +1252,19 @@ class RandomLocationMNIST(data.Dataset):
 
         if self.transform is not None:
             img = self.transform(img)
+
+        # MJR:
+        # Reshape img into stack of tiles/groups, where the tiles are taken
+        # from the larger image first by rows, then by columns(e.g., top-left
+        # tile, ..., bottom-left tile, ..., top-right tile, ...,
+        # bottom-right tile). Tiles do not overlap.
+        img_grouped = img.view((1, self.groups_per_side, self.group_size_per_side, self.groups_per_side, self.group_size_per_side))
+        img_grouped = img_grouped.permute(0, 1, 3, 2, 4).contiguous()
+        img_grouped = img_grouped.view((1, self.groups_per_side**2, self.group_size_per_side, self.group_size_per_side)).contiguous()
+        # And repackage into a tuple of tiles. Must be a better way to do this...
+        img = ()
+        for i_group in range(self.groups_per_side**2):
+            img += (img_grouped[:,i_group,:,:],)
 
         if self.target_transform is not None:
             target = self.target_transform(target)

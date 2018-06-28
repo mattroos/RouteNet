@@ -1,4 +1,4 @@
-# mnist_routenet.py
+# mnist_routenet_1to1_output_banks.py
 
 from __future__ import print_function
 import argparse
@@ -302,14 +302,16 @@ def train_softgate(epoch, no_gates=False):
         optimizer.zero_grad()
         if return_gate_status:
             output, total_gate_act, prob_open_gate, gate_status_ = model.forward_softgate(data,
-                                                                                          return_gate_status=return_gate_status,
-                                                                                          b_batch_norm=b_batch_norm,
-                                                                                          b_use_cuda=args.cuda)
+                                                                                          return_gate_status = return_gate_status,
+                                                                                          b_batch_norm = b_batch_norm,
+                                                                                          b_use_cuda = args.cuda,
+                                                                                          b_no_gates = no_gates)
         else:
             output, total_gate_act = model.forward_softgate(data,
-                                                            return_gate_status=return_gate_status,
-                                                            b_batch_norm=b_batch_norm,
-                                                            b_use_cuda=args.cuda)
+                                                            return_gate_status = return_gate_status,
+                                                            b_batch_norm = b_batch_norm,
+                                                            b_use_cuda = args.cuda,
+                                                            b_no_gates = no_gates)
             prob_open_gate = np.nan
         
         loss_nll = F.cross_entropy(output, target)  # cross_entropy is log_softmax + negative log likelihood
@@ -417,7 +419,7 @@ def test_softgate_speed():
         output, _, = model.forward_softgate(data, return_gate_status=False)
     return time.time() - t_start
 
-def test_softgate():
+def test_softgate(no_gates=False):
     # TODO: Match to train_softgate. Don't get/report gate_status/prob in train, but do it in test.
     model.eval()
 
@@ -436,8 +438,9 @@ def test_softgate():
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
         output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data,
-                                                                                     return_gate_status=return_gate_status,
-                                                                                     b_batch_norm=b_batch_norm)
+                                                                                     return_gate_status = return_gate_status,
+                                                                                     b_batch_norm = b_batch_norm,
+                                                                                     b_no_gates = no_gates)
 
         # Store target labels and gate status for all samples
         if cnt_batches==0:
@@ -663,7 +666,7 @@ if 0:
 for ep in range(0, args.epochs):
     # Train and test
     loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1, args.no_gates)
-    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate()
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate(args.no_gates)
 
     # Save model architecture and params, if it's the best so far on the test set
     if (loss_nll_test[ep] < loss_nll_best) and not args.no_save:
