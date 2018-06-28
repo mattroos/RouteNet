@@ -370,7 +370,7 @@ class RouteNetOneToOneOutput(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False):
+    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward_hardgate()
@@ -413,7 +413,8 @@ class RouteNetOneToOneOutput(nn.Module):
                 # gate_act = F.relu(gate_act)
                 gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
-                total_gate_act += gate_act
+                if not b_no_gates:
+                    total_gate_act += gate_act
 
                 if return_gate_status:
                     # Gate status is set to True (open) only if both the gate node is
@@ -429,9 +430,15 @@ class RouteNetOneToOneOutput(nn.Module):
                 data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
 
                 if bank_data_acts[i_target] is None:
-                    bank_data_acts[i_target] = gate_act * data_act
+                    if b_no_gates:
+                        bank_data_acts[i_target] = data_act
+                    else:
+                        bank_data_acts[i_target] = gate_act * data_act
                 else:
-                    bank_data_acts[i_target] += gate_act * data_act
+                    if b_no_gates:
+                        bank_data_acts[i_target] += data_act
+                    else:
+                        bank_data_acts[i_target] += gate_act * data_act
 
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             if b_batch_norm:

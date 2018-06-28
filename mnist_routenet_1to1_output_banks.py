@@ -124,6 +124,7 @@ plt.ion()
 # 2. Train model with more banks in the final bank layer than the number
 #    of output nodes. Show that gates that feed the unconnected final banks
 #    are almost always closed even for the test set.
+#    Should show "functional connectivity map" for both training and test sets.
 #
 # 3. Incremental learning without forgetting?
 #    Train on one digit at a time, using samples of all digit types, but 
@@ -209,9 +210,11 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
 parser.add_argument('--lambda-nll', type=float, default=1.0, metavar='N',
                     help='weighting on nll loss. weight on gate activation loss is 1-lambda_nll.')
 parser.add_argument('--load', action='store_true', default=False,
-                    help='disables CUDA training')
+                    help='load stored model')
 parser.add_argument('--no-save', action='store_true', default=False,
-                    help='disables CUDA training')
+                    help='disables saving of model during training')
+parser.add_argument('--no-gates', action='store_true', default=False,
+                    help='trains model with all gates fully open')
 args = parser.parse_args()
 
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -278,7 +281,7 @@ def train_hardgate(epoch):
     # return loss_sum/cnt
     return loss_total_train_hist, loss_nll_train_hist, loss_gate_train_hist
 
-def train_softgate(epoch):
+def train_softgate(epoch, no_gates=False):
     return_gate_status = True
     b_batch_norm = True
 
@@ -573,7 +576,7 @@ param_dict = {'n_input_neurons':n_input_neurons,
              # 'idx_output_banks':np.arange( np.sum(banks_per_layer)-banks_per_layer[-1], np.sum(banks_per_layer) ),
              'idx_output_banks':np.arange( np.sum(banks_per_layer)-10, np.sum(banks_per_layer) ),
              # 'n_output_neurons':10,
-             'n_neurons_per_hidd_bank':10,
+             'n_neurons_per_hidd_bank':5,
             }
 # model = rn.RouteNet(**param_dict)
 # model = rn.RouteNetRecurrentGate(**param_dict)
@@ -659,7 +662,7 @@ if 0:
 ## Run the main training and testing loop
 for ep in range(0, args.epochs):
     # Train and test
-    loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
+    loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1, args.no_gates)
     loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate()
 
     # Save model architecture and params, if it's the best so far on the test set
@@ -773,14 +776,14 @@ plt.clf()
 for i, targ in enumerate(targets_unique):
     idx = np.where(target==targ)[0]
     mn = np.mean(gate_status[idx,:,:], axis=0)
-    plt.subplot(3,4,i+1)
+    plt.subplot(2,5,i+1)
     plt.imshow(mn)
     plt.clim(0,1)
     plt.title(targ)
 
-## Plot the fraction of open gates in connectivity map,
+## Plot the fraction of test set open gates in connectivity map,
 ## grouped by target labels.
-print('\nPlotting connectivity maps. This may take a minute...')
+print('\nPlotting test set connectivity maps. This may take a minute...')
 targets_unique = np.sort(np.unique(target))
 plt.figure(fn)
 fn = fn + 1
@@ -793,19 +796,70 @@ for i_layer in range(len(banks_per_layer)):
 for i, targ in enumerate(targets_unique):
     idx = np.where(target==targ)[0]
     mn = np.mean(gate_status[idx,:,:], axis=0)
-    plt.subplot(3,4,i+1)
-    plt.scatter(layer_num, node_num, s=10, facecolors='none', edgecolors='k')
+    plt.subplot(2,5,i+1)
+    plt.scatter(layer_num+1, node_num, s=10, facecolors='none', edgecolors='k')
     for i_source in range(np.sum(banks_per_layer)):
         for i_target in range(np.sum(banks_per_layer)):
             alpha = mn[i_source, i_target]
             if alpha > 0.0:
-                plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
+                plt.plot((layer_num[i_source]+1, layer_num[i_target]+1), (node_num[i_source], node_num[i_target]), 'k-', alpha=alpha)
                 # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
-    plt.title(targ)
+    plt.title('"%d"' % (targ), fontsize=18)
     # frame1 = plt.gca()
     # frame1.axes.get_xaxis().set_visible(False)
     # frame1.axes.get_yaxis().set_visible(False)
+    plt.xticks(np.arange(len(banks_per_layer))+1)
+    plt.yticks(np.arange(0, banks_per_layer[0], 5))
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.scatter(len(banks_per_layer), banks_per_layer[0]-10+i, s=20, facecolors='r', edgecolors='r')
 print('Done.')
+
+
+# ## Plot the fraction of training set open gates in connectivity map,
+# ## grouped by target labels.
+# ## Get model outputs for a test batch
+# print('\nPlotting training set connectivity maps. This may take a minute...')
+# model.eval()
+# cnt = 0
+# gate_status_all = np.zeros((len(train_loader)*args.batch_size,)+bank_conn.shape)
+# targets_all = np.zeros((len(train_loader)*args.batch_size))
+# for data, target in train_loader:
+#     cnt += 1
+#     if args.cuda:
+#         data, target = data.cuda(), target.cuda()
+#     data, target = Variable(data, volatile=True), Variable(target)
+#     output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True, b_batch_norm = True)
+#     gate_status_all[(cnt-1)*args.batch_size:cnt*args.batch_size,:,:] = gate_status
+#     targets_all[(cnt-1)*args.batch_size:cnt*args.batch_size] = target.data.cpu().numpy()
+# target = targets_all
+# gate_status = gate_status_all
+# targets_unique = np.sort(np.unique(target))
+# plt.figure(fn)
+# fn = fn + 1
+# plt.clf()
+# layer_num = np.zeros((0))
+# node_num = np.zeros((0))
+# for i_layer in range(len(banks_per_layer)):
+#     layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer))
+#     node_num = np.append(node_num, np.arange(banks_per_layer[i_layer]))
+# for i, targ in enumerate(targets_unique):
+#     idx = np.where(target==targ)[0]
+#     mn = np.mean(gate_status[idx,:,:], axis=0)
+#     plt.subplot(2,5,i+1)
+#     plt.scatter(layer_num+1, node_num+1, s=10, facecolors='none', edgecolors='k')
+#     for i_source in range(np.sum(banks_per_layer)):
+#         for i_target in range(np.sum(banks_per_layer)):
+#             alpha = mn[i_source, i_target]
+#             if alpha > 0.0:
+#                 plt.plot((layer_num[i_source]+1, layer_num[i_target]+1), (node_num[i_source]+1, node_num[i_target]+1), 'k-', alpha=alpha)
+#                 # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
+#     plt.title('"%d"' % (targ))
+#     # frame1 = plt.gca()
+#     # frame1.axes.get_xaxis().set_visible(False)
+#     # frame1.axes.get_yaxis().set_visible(False)
+# print('Done.')
+
 
 sys.exit()
 
