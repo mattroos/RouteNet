@@ -513,9 +513,8 @@ param_dict = {'n_input_neurons':n_input_neurons,
              'n_output_neurons':10,
              'n_neurons_per_hidd_bank':10,
             }
-# model = rn.RouteNet(**param_dict)
-# model = rn.RouteNetModuleList(**param_dict)
-model = rn.RouteNetRecurrentGate(**param_dict)
+model = rn.RouteNet(**param_dict)
+# model = rn.RouteNetRecurrentGate(**param_dict)
 if args.cuda:
     model.cuda()
 
