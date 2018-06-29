@@ -43,7 +43,7 @@ After 5 epochs, 96% of gates are open on average.
 
 Stage 2:
 Edit code such that gate loss is negative of usual, promoting *open* gates.
-	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 60 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --load
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --load
 
 TODO:
 Stage 3:
