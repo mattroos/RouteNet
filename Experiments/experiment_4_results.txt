@@ -1,0 +1,55 @@
+==============
+Experiment #4:
+==============
+# 4. Spatial routing
+#    Use MNIST digits in larger field. Parcellate inputs into input banks
+#    in 2D grid-wise manner. Maintain a 2D spatial arrangement of banks in layers
+#    but take outputs only from a single row or column. After training,
+#    show "flow" of digit info from its input location to the proper
+#    output bank/node.
+
+6/29/18
+
+
+Try training in three stages, always starting with model of previous stage...
+
+1. Use negative gate loss and no NLL/classification loss. Goal is to get all the gates open. Use large learning rate and batch size.
+2. Use no gate loss, only NLL/classfication loss. Goal is to get good classificaiton of all classes, which is likely easier
+with most of the gates open (the reason for stage #1 above).
+3. Use positive gate loss plus NLL/classificaiton loss (0.5 weighting for each seems to be working okay).
+
+NOTE: Need to make sure fan-out size and number of layers relate such that digits at edges of the image are still able to 
+activate the output banks/neurons.  If fan-out or # layers is too low, there is no way for that information to reach
+the output node.
+
+
+----------------------
+
+MODEL 1-1:
+expanded_size = 112
+group_size_per_dim = 28
+
+n_layers = 4
+n_fan_out_per_dim = 5
+
+'n_neurons_per_hidd_bank':100,
+
+
+Stage 1:
+Edit code such that gate loss is negative of usual, promoting *open* gates.
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 10 --lambda-nll 0.0 --lr 0.5 --batch-size 500 --log-interval 20
+After 5 epochs, 96% of gates are open on average.
+	Train Epoch: 5 [60000/60000 (99%), Loss: -0.963285	Gate loss: -0.9633	Prob open gate: 0.9646	Acc: 9.92	44.13 seconds
+
+Stage 2:
+Edit code such that gate loss is negative of usual, promoting *open* gates.
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 60 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --load
+
+TODO:
+Stage 3:
+Use baseline code, such that gate loss is positive, as usual, promoting *closed* gates.
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 60 --lambda-nll 0.5 --lr 0.05 --batch-size 500 --log-interval 20
+
+
+RESULTS:
+
