@@ -437,6 +437,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         output = Variable(torch.zeros(batch_size,self.n_output_neurons))
         if b_use_cuda:
             total_gate_act = total_gate_act.cuda()
+            output = output.cuda()
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
@@ -448,7 +449,8 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
 
         # Update activations of all the input banks. These are not gated.
         for i_input_group, idx_input_bank in enumerate(self.idx_input_banks):
-            bank_data_acts[idx_input_bank] = F.relu(self.input2hidden_data[i_input_group](x[i_input_group]))
+            # bank_data_acts[idx_input_bank] = F.relu(self.input2hidden_data[i_input_group](x[i_input_group]))
+            bank_data_acts[idx_input_bank] = self.input2hidden_data[i_input_group](x[i_input_group])
 
         # Update activations of all the hidden banks. These are soft gated.
         for i_target in range(self.n_hidd_banks):
@@ -467,6 +469,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
 
                 if not b_no_gates:
                     total_gate_act += gate_act
+                    # total_gate_act -= gate_act # promote open gates rather than closed
 
                 if return_gate_status:
                     # Gate status is set to True (open) only if both the gate node is
@@ -475,8 +478,9 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     # inputs are zeros, this is functionally the same as a closed gate.
                     gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
                                                          np.any(bank_data_acts[i_source].data, axis=1)
-                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-                    n_open_gates += np.sum(z)
+
+                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                n_open_gates += np.sum(z)
 
                 dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
                 data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
@@ -492,13 +496,11 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     else:
                         bank_data_acts[i_target] += gate_act * data_act
 
-            pdb.set_trace()
             bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
             if b_batch_norm:
                 bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
 
-        if return_gate_status:
-            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+        prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
 
         # Update activations of the output layer. The output banks are not gated.
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
@@ -517,7 +519,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
         else:
-            return output, total_gate_act
+            return output, total_gate_act, prob_open_gate
 
     def save_model(self, model_base_filename):
         # Just saving the model, not the optimizer state. To stop and 
@@ -653,6 +655,7 @@ class RouteNetOneToOneOutput(nn.Module):
         output = Variable(torch.zeros(batch_size,self.n_output_neurons))
         if b_use_cuda:
             total_gate_act = total_gate_act.cuda()
+            output = output.cuda()
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
@@ -682,16 +685,19 @@ class RouteNetOneToOneOutput(nn.Module):
 
                 if not b_no_gates:
                     total_gate_act += gate_act
+                    # total_gate_act -= gate_act # promote open gates rather than closed
 
                 if return_gate_status:
                     # Gate status is set to True (open) only if both the gate node is
                     # greater than zero and one or more activations from the source
                     # bank are non-zero.  I.e., if the gate is open but all the data
                     # inputs are zeros, this is functionally the same as a closed gate.
-                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
-                                                         np.any(bank_data_acts[i_source].data, axis=1)
-                    z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-                    n_open_gates += np.sum(z)
+                    # gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
+                    #                                      np.any(bank_data_acts[i_source].data, axis=1)
+                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0)
+
+                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                n_open_gates += np.sum(z)
 
                 dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
                 data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
@@ -711,8 +717,7 @@ class RouteNetOneToOneOutput(nn.Module):
             if b_batch_norm:
                 bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
 
-        if return_gate_status:
-            prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+        prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
 
         # Update activations of the output layer. The output banks are not gated.
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
@@ -731,7 +736,7 @@ class RouteNetOneToOneOutput(nn.Module):
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
         else:
-            return output, total_gate_act
+            return output, total_gate_act, prob_open_gate
 
     def save_model(self, model_base_filename):
         # Just saving the model, not the optimizer state. To stop and 
