@@ -677,8 +677,6 @@ class RouteNetOneToOneOutput(nn.Module):
 
         # Update activations of all the hidden banks. These are soft gated.
         for i_target in range(self.n_hidd_banks):
-            if i_target==10:
-                pdb.set_trace()
             # Get list of source banks that are connected to this target bank
             idx_source = np.where(self.bank_conn[:,i_target])[0]
 
@@ -736,10 +734,6 @@ class RouteNetOneToOneOutput(nn.Module):
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
             data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
             output[:,i_output_neuron] = data_act
-            # if output is None:
-            #     output = data_act
-            # else:
-            #     output += data_act
 
         # Should we gate the one-to-one outputs?  Just trying RELU for now...
         output = F.relu(output)
@@ -805,15 +799,18 @@ class RouteNetOneToOneOutput(nn.Module):
 
         # Update activations of all the hidden banks. These are gated.
         for i_target in range(self.n_hidd_banks):
-            if i_target==10:
-                pdb.set_trace()
             # Get list of source banks that are connected to this target bank
             idx_source = np.where(self.bank_conn[:,i_target])[0]
 
             # Check to see if all source bank activations are None, in which case
             # nothing has to be done.
-            if np.all(bank_data_acts[idx_source]==None):
-                continue
+            ### TODO BUG!?:  For unknown reason, the line below is resulting in errors
+            # in the computation of the gate activations in the loop below. WTF?
+            # Code will work without it, however. It will just be minimally slower
+            # because it will loop over all the source banks, checking to see if
+            # they are None.
+            # if np.all(bank_data_acts[idx_source]==None):
+            #     continue
 
             # Compute gate values for each of the source banks, and data values if
             # gate is open.

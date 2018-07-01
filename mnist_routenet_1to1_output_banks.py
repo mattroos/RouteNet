@@ -497,35 +497,44 @@ def test_softgate(no_gates=False):
 def test_compare():
     model.eval()
 
-    b_batch_norm = False
-    cnt = 0
+    b_batch_norm = True
+    cnt_samples = 0
+    cnt_correct_1 = 0
+    cnt_correct_2 = 0
+    cnt_no_output2 = 0
 
+    print('Comparing results from soft-gate and hard-gate models...')
+    t_start = time.time()
     for data, target in test_loader_1:
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         data, target = Variable(data, volatile=True), Variable(target)
-        # output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data,
-        #                                                                              return_gate_status=True,
-        #                                                                              b_use_cuda = args.cuda,
-        #                                                                              b_batch_norm = b_batch_norm,
-        #                                                                              # b_no_gates = args.no_gates,
-        #                                                                              b_neg_gate_loss = args.neg_gate_loss)
+        output1, total_gate_act1, prob_open_gate1, gate_status1 = model.forward_softgate(data,
+                                                                                     return_gate_status=True,
+                                                                                     b_use_cuda = args.cuda,
+                                                                                     b_batch_norm = b_batch_norm,
+                                                                                     b_no_gates = args.no_gates,
+                                                                                     b_neg_gate_loss = args.neg_gate_loss)
         output2, total_gate_act2, prob_open_gate2, gate_status2 = model.forward_hardgate(data,
                                                                                      return_gate_status=True,
                                                                                      b_use_cuda = args.cuda,
                                                                                      b_batch_norm = b_batch_norm,
                                                                                      b_neg_gate_loss = args.neg_gate_loss)
-        pdb.set_trace()
 
-        if output2 is None:
-            if not np.all(output1==0):
-                print('Mismatch.')
-        elif not np.array_equal(output1.data.cpu().numpy(), output2.data.cpu().numpy()):
-            print('Mismatch.')
-
-        if cnt % 1000 == 0:
-            print(cnt)
-        cnt += 1
+        # Results will be slightly different due to numerical precision, or something else that's
+        # fishy in pytorch. Check for equal accuracy rather than equal output.
+        pred = output1.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+        cnt_correct_1 += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+        if np.all(output2.data.cpu().numpy()==None):
+            cnt_no_output2 += 1
+        else:
+            pred = output2.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            cnt_correct_2 += pred.eq(target.data.view_as(pred)).long().cpu().sum()
+        cnt_samples += 1
+        if cnt_samples % 100 == 0:
+            print('%d samples: acc1 = %f, acc2 = %f, cnt_no_output2 = %d' % 
+                (cnt_samples, float(cnt_correct_1)/cnt_samples, float(cnt_correct_1)/cnt_samples, cnt_no_output2))
+    print('Inference time: %0.2f seconds.' % (time.time()-t_start))
 
 
 ## Set up DataLoaders
@@ -584,20 +593,11 @@ test_loader = torch.utils.data.DataLoader(
                     batch_size = args.test_batch_size,
                     shuffle = False,
                     **kwargs)
-test_loader_1 = torch.utils.data.DataLoader(
-                    f_datasets(dir_dataset,
-                                train = False,
-                                download = False,
-                                transform = transform
-                                ),
-                    batch_size = 1,
-                    shuffle = False,
-                    **kwargs)
 
 ## Instantiate network model
-n_layers = 2
+n_layers = 3
 n_banks_per_layer = 10
-n_fan_out = 1
+n_fan_out = 5
 banks_per_layer = [n_banks_per_layer] * n_layers
 # banks_per_layer = np.asarray(banks_per_layer)
 # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
@@ -640,8 +640,6 @@ t_start = time.time()
 loss_nll_best = np.Inf
 loss_nll_best_epoch = 0
 
-## Compare soft and hard gating on test set
-test_compare()
 
 ## Run the main training and testing loop
 for ep in range(0, args.epochs):
@@ -649,21 +647,30 @@ for ep in range(0, args.epochs):
     for param_group in optimizer.param_groups:
         print('LR = %f' % param_group['lr'])
     loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1, args.no_gates)
-    # loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate(args.no_gates)
+    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate(args.no_gates)
 
-    # # Save model architecture and params, if it's the best so far on the test set
-    # if (loss_nll_test[ep] < loss_nll_best) and not args.no_save:
-    #     loss_nll_best_epoch = ep
-    #     loss_nll_best = loss_nll_test[ep]
-    #     model.save_model(fullRootFilenameSoftModel)
-    #     print('Lowest test set loss. Saving model.\n')
+    # Save model architecture and params, if it's the best so far on the test set
+    if (loss_nll_test[ep] < loss_nll_best) and not args.no_save:
+        loss_nll_best_epoch = ep
+        loss_nll_best = loss_nll_test[ep]
+        model.save_model(fullRootFilenameSoftModel)
+        print('Lowest test set loss. Saving model.\n')
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
 
 
-## Compare soft and hard gating on test set
-test_compare()
+# ## Compare soft and hard gating on test set
+# test_loader_1 = torch.utils.data.DataLoader(
+#                     f_datasets(dir_dataset,
+#                                 train = False,
+#                                 download = False,
+#                                 transform = transform
+#                                 ),
+#                     batch_size = 1,
+#                     shuffle = False,
+#                     **kwargs)
+# test_compare()
 
 
 ## Start plotting results...
