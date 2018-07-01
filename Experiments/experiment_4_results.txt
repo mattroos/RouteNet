@@ -10,6 +10,7 @@ Experiment #4:
 
 6/29/18
 
+commit: 73ea028ebe6fee4252a96b844f932bd2333b8a08
 
 Try training in three stages, always starting with model of previous stage...
 
@@ -36,20 +37,75 @@ n_fan_out_per_dim = 5
 
 
 Stage 1:
+--------
 Edit code such that gate loss is negative of usual, promoting *open* gates.
 	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 10 --lambda-nll 0.0 --lr 0.5 --batch-size 500 --log-interval 20
 After 5 epochs, 96% of gates are open on average.
 	Train Epoch: 5 [60000/60000 (99%), Loss: -0.963285	Gate loss: -0.9633	Prob open gate: 0.9646	Acc: 9.92	44.13 seconds
 
+
 Stage 2:
+--------
+Scheduler gamma = 0.97
 Edit code such that gate loss is negative of usual, promoting *open* gates.
-	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --load
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.1 --batch-size 500 --log-interval 20 --load
 
-TODO:
+LR = 0.004902
+Train Epoch: 100 [00500/60000 (0%), Loss: 0.449724	Gate loss: -0.7930	Prob open gate: 0.9130	Acc: 85.00	0.62 seconds
+Train Epoch: 100 [10500/60000 (17%), Loss: 0.508235	Gate loss: -0.7934	Prob open gate: 0.9163	Acc: 83.94	7.70 seconds
+Train Epoch: 100 [20500/60000 (33%), Loss: 0.533217	Gate loss: -0.7927	Prob open gate: 0.9166	Acc: 82.82	14.78 seconds
+Train Epoch: 100 [30500/60000 (50%), Loss: 0.532000	Gate loss: -0.7921	Prob open gate: 0.9168	Acc: 82.72	21.90 seconds
+Train Epoch: 100 [40500/60000 (67%), Loss: 0.531773	Gate loss: -0.7932	Prob open gate: 0.9152	Acc: 83.17	28.97 seconds
+Train Epoch: 100 [50500/60000 (83%), Loss: 0.547795	Gate loss: -0.7930	Prob open gate: 0.9157	Acc: 82.55	36.11 seconds
+Train Epoch: 100 [60000/60000 (99%), Loss: 0.478967	Gate loss: -0.7943	Prob open gate: 0.9153	Acc: 84.56	42.76 seconds
+
+Test set: Average loss: 995.3275, Accuracy: 8593/10000 (85.9%)
+
+Confusion Matrix:
+[[ 907    0    6    1    4   11   14    7   27    3]
+ [   2 1107    5    4    2    2    2    2    7    2]
+ [  17    3  873   47   12   27   23   13   13    4]
+ [   3    6   27  833    1   57    0   17   45   21]
+ [   1    9    6    1  830    5   29    3    3   95]
+ [  21    6   10   67   13  693    9   10   39   24]
+ [  20   13    8    1   25    9  865    2   14    1]
+ [   2   19   25   20    8    5    0  853   10   86]
+ [  20    7    5   39   12   35   17    6  796   37]
+ [   7    9    2   12   81   12    4   29   17  836]]
+
+*Accuracy is still slowly improving after 100 epochs.
+
+
 Stage 3:
+--------
+Scheduler gamma = 0.98
 Use baseline code, such that gate loss is positive, as usual, promoting *closed* gates.
-	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 60 --lambda-nll 0.5 --lr 0.05 --batch-size 500 --log-interval 20
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 0.5 --lr 0.05 --batch-size 500 --log-interval 20 --load
 
+LR = 0.006766
+Train Epoch: 100 [00500/60000 (0%), Loss: 0.385872	Gate loss: 0.3463	Prob open gate: 0.5252	Acc: 87.60	0.62 seconds
+Train Epoch: 100 [10500/60000 (17%), Loss: 0.403596	Gate loss: 0.3476	Prob open gate: 0.5285	Acc: 85.35	7.78 seconds
+Train Epoch: 100 [20500/60000 (33%), Loss: 0.410337	Gate loss: 0.3474	Prob open gate: 0.5288	Acc: 84.56	15.00 seconds
+Train Epoch: 100 [30500/60000 (50%), Loss: 0.413110	Gate loss: 0.3468	Prob open gate: 0.5265	Acc: 84.68	22.16 seconds
+Train Epoch: 100 [40500/60000 (67%), Loss: 0.410789	Gate loss: 0.3474	Prob open gate: 0.5253	Acc: 85.45	29.34 seconds
+Train Epoch: 100 [50500/60000 (83%), Loss: 0.416709	Gate loss: 0.3471	Prob open gate: 0.5256	Acc: 84.51	36.47 seconds
+Train Epoch: 100 [60000/60000 (99%), Loss: 0.386886	Gate loss: 0.3473	Prob open gate: 0.5270	Acc: 86.58	43.26 seconds
 
-RESULTS:
+Test set: Average loss: 237.2249, Accuracy: 8740/10000 (87.4%)
 
+Confusion Matrix:
+[[ 906    3   10    2    5   12    7    4   28    3]
+ [   0 1110    4    2    2    1    3    3    7    3]
+ [  12    2  900   43    8   17   14   17   15    4]
+ [   5    9   35  850    2   42    0   20   33   14]
+ [   3    0    6    0  826    5   17    3    9  113]
+ [  18    6   12   63    6  726   11   16   20   14]
+ [  20    8    9    0   23   13  869    0   16    0]
+ [   2   16   22   24    9    4    0  878    7   66]
+ [  12    1    9   38   11   37    7   11  825   23]
+ [   9    9    3   21   61    4    1   34   17  850]]
+
+* Unconnected output banks are rightfully gated off most of the time.
+* Many of the banks in the second hidden layer are gated off. Too much redundancy? Good or bad thing?
+* Should maybe add gates from input data banks to first hidden layer of banks.
+* See Fig_exp4_stage.png

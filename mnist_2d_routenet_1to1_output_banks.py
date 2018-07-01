@@ -137,7 +137,12 @@ plt.ion()
 #    in 2D grid-wise manner. Maintain a 2D spatial arrangement of banks in layers
 #    but take outputs only from a single row or column. After training,
 #    show "flow" of digit info from its input location to the proper
-#    output bank/node.
+#    output bank/node. If possible, also have model predict digit location,
+#    using output neurons that are spatially distant from the classification
+#    neurons. This is analogous to what/where pathways in the brain, with
+#    those different types of information being used for different purposes.
+#    In a hypothetical model with feedback gating, that task at had could
+#    gate off pathways the provide unnecessary information.
 #
 # 5. Spatial routing and counting
 #    Use inputs and architecture similar to in (4) but use multiple instance
@@ -145,6 +150,15 @@ plt.ion()
 #    are two nodes that give the count of the number of instances of each
 #    class. Does the model route in a manner that can accomodate this 
 #    parallelized counting?
+#
+# 6. Different routing paths for different information?
+#    Use standard MNIST but with colored digits (on background of colored
+#    noise?). Use 2D spatial arrangement. Output neurons for digit classification
+#    should be spatially isolated from those That output color information.
+#    Show that the two paths are both activated. But what's the point?
+#    It's only half an experiment in which feedback gating might control
+#    what information is needed/wanted, and thus gate-off routes that are
+#    unnecessary.
 #############################################################################
 
 
@@ -194,7 +208,7 @@ parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--batch-size', type=int, default=100, metavar='N',
                     help='input batch size for training (default: 100)')
 parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
-                    help='input batch size for testing (default: 100)')
+                    help='input batch size for testing (default: 1000)')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
@@ -215,6 +229,8 @@ parser.add_argument('--no-save', action='store_true', default=False,
                     help='disables saving of model during training')
 parser.add_argument('--no-gates', action='store_true', default=False,
                     help='trains model with all gates fully open')
+parser.add_argument('--neg-gate-loss', action='store_true', default=False,
+                    help='trains model with negative gate loss, promoting open gates')
 args = parser.parse_args()
 
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -617,7 +633,7 @@ if args.cuda:
 # model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.95)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.98)
 
 ## Train it, get results on test set, and save the model
 loss_total_train = np.zeros(args.epochs)
@@ -633,10 +649,11 @@ prob_open_gate_test = np.zeros(args.epochs)
 acc_test = np.zeros(args.epochs)
 
 t_start = time.time()
-loss_nll_best = np.Inf
-loss_nll_best_epoch = 0
+acc_best = 0
+acc_best_epoch = 0
 
 
+##########################################################
 ## Run the main training and testing loop
 for ep in range(0, args.epochs):
     scheduler.step()
@@ -646,14 +663,15 @@ for ep in range(0, args.epochs):
     loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted = test_softgate(args.no_gates)
 
     # Save model architecture and params, if it's the best so far on the test set
-    if (loss_nll_test[ep] < loss_nll_best) and not args.no_save:
-        loss_nll_best_epoch = ep
-        loss_nll_best = loss_nll_test[ep]
+    if (acc_test[ep] > acc_best) and not args.no_save:
+        acc_best_epoch = ep
+        acc_best = acc_test[ep]
         model.save_model(fullRootFilenameSoftModel)
-        print('Lowest test set loss. Saving model.\n')
+        print('Highest test set accuracy so far. Saving model.\n')
 
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
+##########################################################
 
 
 ## Compare soft and hard gating on test set

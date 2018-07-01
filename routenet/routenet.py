@@ -255,7 +255,10 @@ class RouteNet(nn.Module):
                 # gate_act = F.relu(gate_act)
                 gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
-                total_gate_act += gate_act
+                if args.neg_gate_loss:
+                    total_gate_act -= gate_act
+                else:
+                    total_gate_act += gate_act
 
                 if return_gate_status:
                     gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
@@ -420,7 +423,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False):
+    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False, b_neg_gate_loss=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward_hardgate()
@@ -468,8 +471,11 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                 gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
                 if not b_no_gates:
+                    if b_neg_gate_loss:
+                        total_gate_act -= gate_act
+                    else:
+                        total_gate_act += gate_act
                     total_gate_act += gate_act
-                    # total_gate_act -= gate_act # promote open gates rather than closed
 
                 if return_gate_status:
                     # Gate status is set to True (open) only if both the gate node is
@@ -639,7 +645,7 @@ class RouteNetOneToOneOutput(nn.Module):
         net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
         return net
 
-    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False):
+    def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False, b_neg_gate_loss=False):
         # Unlike the main forward() method, this one uses soft gates thus
         # allowing batches to be used in training. The notion is that this
         # could be used for fast pre-training, and then forward_hardgate()
@@ -664,12 +670,15 @@ class RouteNetOneToOneOutput(nn.Module):
         if b_batch_norm:
             x = self.input_batch_norm(x)
 
-        # Update activations of all the input banks. These are not gated.
+        # Update activations of all the input banks. These are not gated. Do not apply
+        # activation non-linearity here, as that is done in the loop below.
         for i_input_bank in self.idx_input_banks:
-            bank_data_acts[i_input_bank] = F.relu(self.input2hidden[i_input_bank](x))
+            bank_data_acts[i_input_bank] = self.input2hidden[i_input_bank](x)
 
         # Update activations of all the hidden banks. These are soft gated.
         for i_target in range(self.n_hidd_banks):
+            if i_target==10:
+                pdb.set_trace()
             # Get list of source banks that are connected to this target bank
             idx_source = np.where(self.bank_conn[:,i_target])[0]
 
@@ -684,8 +693,10 @@ class RouteNetOneToOneOutput(nn.Module):
                 gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
                 if not b_no_gates:
-                    total_gate_act += gate_act
-                    # total_gate_act -= gate_act # promote open gates rather than closed
+                    if b_neg_gate_loss:
+                        total_gate_act -= gate_act
+                    else:
+                        total_gate_act += gate_act
 
                 if return_gate_status:
                     # Gate status is set to True (open) only if both the gate node is
@@ -695,6 +706,8 @@ class RouteNetOneToOneOutput(nn.Module):
                     # gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
                     #                                      np.any(bank_data_acts[i_source].data, axis=1)
                     gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0)
+                    # if not gate_status[:, i_source, i_target]:
+                    #     pdb.set_trace()
 
                 z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                 n_open_gates += np.sum(z)
@@ -727,6 +740,134 @@ class RouteNetOneToOneOutput(nn.Module):
             #     output = data_act
             # else:
             #     output += data_act
+
+        # Should we gate the one-to-one outputs?  Just trying RELU for now...
+        output = F.relu(output)
+
+        total_gate_act /= self.n_bank_conn  # average per connection
+
+        if return_gate_status:
+            return output, total_gate_act, prob_open_gate, gate_status
+        else:
+            return output, total_gate_act, prob_open_gate
+
+    def forward_hardgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_neg_gate_loss=False):
+        # Definition: A "bank" of neurons is a group of neurons that are not connected to 
+        # each other. If two banks are connected, they are fully connected. Inputs to a bank
+        # from others banks may be gated on/off in bank-wise fashion. E.g., if Set_i has
+        # inputs Set_j and Set_k,
+        #    si = a( gji()*Wji*sj + gki()*Wki*sj) ), where gji() is a gating function and a() is an activation function.
+        #
+        # Gating functions, g(), may be implemented in various neural ways:
+        # 1. Source banks have clones which all generate the same output but have different
+        #    targets. That target bank has a single gating neuron for each source bank, which
+        #    is used to compute the gate function, gji(), and possibly inhibit the dendrites
+        #    that take input from that source. Thus only if the gate neuron is "open" do we
+        #    need to compute the impact of the relevant source bank. If all input gates are closed
+        #    than nothing needs to be done. The default mode for a gate is closed, such that
+        #    a "table of open gates" can be iteratively updated and used to determine which banks
+        #    need updating and which inputs they should process. This might be done asyncronously.
+
+        # ASSUMPTION: For now, I'm assuming that the structure is layered and feedforward such that one pass
+        # through the connection matrix from low index value to high index value will result in
+        # complete processing of the data from input to output.
+
+        batch_size = x.size()[0]
+        assert batch_size==1, 'batch_size must be 1 for forward_hardgate().'
+        x = x.view(batch_size, -1)  # Flatten across all dimensions except batch dimension
+
+        bank_data_acts = np.full(self.n_hidd_banks, None)
+        n_open_gates = 0
+        prob_open_gate = None
+        total_gate_act = Variable(torch.zeros(batch_size,1))
+        # output = Variable(torch.zeros(batch_size,self.n_output_neurons))
+        output = Variable(torch.FloatTensor(np.full((batch_size, self.n_output_neurons), None)))
+        if b_use_cuda:
+            total_gate_act = total_gate_act.cuda()
+            output = output.cuda()
+
+        if return_gate_status:
+            gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+
+        # Batch norm the inputs.
+        if b_batch_norm:
+            x = self.input_batch_norm(x)
+
+        # Update activations of all the input banks. These are not gated. Do not apply
+        # activation non-linearity here, as that is done in the loop below.
+        for i_input_bank in self.idx_input_banks:
+            bank_data_acts[i_input_bank] = self.input2hidden[i_input_bank](x)
+
+        # # Update activations of all the input banks. These are not gated.
+        # for i_input_bank in self.idx_input_banks:
+        #     module_name = 'input_b%0.2d_data' % (i_input_bank)
+        #     bank_data_acts[i_input_bank] = F.relu(getattr(self, module_name)(x))
+
+        # Update activations of all the hidden banks. These are gated.
+        for i_target in range(self.n_hidd_banks):
+            if i_target==10:
+                pdb.set_trace()
+            # Get list of source banks that are connected to this target bank
+            idx_source = np.where(self.bank_conn[:,i_target])[0]
+
+            # Check to see if all source bank activations are None, in which case
+            # nothing has to be done.
+            if np.all(bank_data_acts[idx_source]==None):
+                continue
+
+            # Compute gate values for each of the source banks, and data values if
+            # gate is open.
+            for i_source in idx_source:
+                if bank_data_acts[i_source] is not None:
+                    dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
+                    gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
+
+                    ## Apply hard sigmoid or RELU
+                    # gate_act = F.relu(gate_act)
+                    gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+                    if b_neg_gate_loss:
+                        total_gate_act -= gate_act
+                    else:
+                        total_gate_act += gate_act
+
+                    if return_gate_status:
+                        # Gate status is set to True (open) only if both the gate node is
+                        # greater than zero and one or more activations from the source
+                        # bank are non-zero.  I.e., if the gate is open but all the data
+                        # inputs are zeros, this is functionally the same as a closed gate.
+                        # gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
+                        #                                      np.any(bank_data_acts[i_source].data, axis=1)
+                        gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0)
+                        # if not gate_status[:, i_source, i_target]:
+                        #     pdb.set_trace()
+
+
+                    # Compute data if gate is open
+                    if gate_act.data[0,0] > 0:
+                        n_open_gates += 1
+
+                        dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
+                        data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
+
+                        if bank_data_acts[i_target] is None:
+                            bank_data_acts[i_target] = gate_act * data_act
+                        else:
+                            bank_data_acts[i_target] += gate_act * data_act
+
+            if bank_data_acts[i_target] is not None:
+                bank_data_acts[i_target] = F.relu(bank_data_acts[i_target])
+                if not np.any(bank_data_acts[i_target].data):
+                    bank_data_acts[i_target] = None
+                elif b_batch_norm:
+                    bank_data_acts[i_target] = self.hidden_batch_scale[i_target](bank_data_acts[i_target])
+
+        prob_open_gate = n_open_gates / float((self.n_bank_conn) * batch_size)
+
+        # Update activations of the output layer. The output banks are not gated.
+        for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
+            if bank_data_acts[i_output_bank] is not None:
+                data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
+                output[:,i_output_neuron] = data_act
 
         # Should we gate the one-to-one outputs?  Just trying RELU for now...
         output = F.relu(output)
