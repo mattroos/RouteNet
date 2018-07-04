@@ -109,3 +109,70 @@ Confusion Matrix:
 * Many of the banks in the second hidden layer are gated off. Too much redundancy? Good or bad thing?
 * Should maybe add gates from input data banks to first hidden layer of banks.
 * See Fig_exp4_stage.png
+
+---------------------------------------------------------------
+
+MODEL 1-2:
+expanded_size = 112
+group_size_per_dim = 16
+
+n_layers = 5
+n_fan_out_per_dim = 5
+
+'n_neurons_per_hidd_bank':100,
+
+
+Stage 1:
+--------
+Gate loss is negative of usual, promoting *open* gates.
+Scheduler gamma = 0.97
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 0.0 --lr 0.5 --batch-size 500 --log-interval 20 --neg-gate-loss
+Train Epoch: 4 [60000/60000 (99%), Loss: -0.846431	Gate loss: -0.8464	Prob open gate: 0.8517	Acc: 10.47	239.37 seconds
+
+Stage 2:
+--------
+Gate loss is negative of usual, promoting *open* gates.
+Scheduler gamma = 0.97
+Edit code such that gate loss is negative of usual, promoting *open* gates.
+ 	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.1 --batch-size 500 --log-interval 20 --neg-gate-loss --load
+
+Wasn't learning, after 43 epochs:
+LR = 0.027824
+Train Epoch: 43 [00500/60000 (0%), Loss: 2.302585	Gate loss: -0.8258	Prob open gate: 0.8473	Acc: 10.00	2.32 seconds
+Train Epoch: 43 [10500/60000 (17%), Loss: 2.302585	Gate loss: -0.8254	Prob open gate: 0.8465	Acc: 10.07	41.33 seconds
+Train Epoch: 43 [20500/60000 (33%), Loss: 2.302587	Gate loss: -0.8255	Prob open gate: 0.8464	Acc: 9.81	80.30 seconds
+Train Epoch: 43 [30500/60000 (50%), Loss: 2.302585	Gate loss: -0.8261	Prob open gate: 0.8466	Acc: 9.80	119.30 seconds
+Train Epoch: 43 [40500/60000 (67%), Loss: 2.302585	Gate loss: -0.8256	Prob open gate: 0.8464	Acc: 9.74	158.16 seconds
+Train Epoch: 43 [50500/60000 (83%), Loss: 2.302585	Gate loss: -0.8260	Prob open gate: 0.8465	Acc: 9.93	197.00 seconds
+Train Epoch: 43 [60000/60000 (99%), Loss: 2.302585	Gate loss: -0.8252	Prob open gate: 0.8463	Acc: 9.87	234.14 seconds
+
+Try again, with lower learning rate....
+
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --neg-gate-loss --load
+LR = 0.035765
+Train Epoch: 12 [00500/60000 (0%), Loss: 2.302585	Gate loss: -0.8323	Prob open gate: 0.8514	Acc: 10.00	2.34 seconds
+Train Epoch: 12 [10500/60000 (17%), Loss: 2.302610	Gate loss: -0.8324	Prob open gate: 0.8515	Acc: 10.06	41.63 seconds
+Train Epoch: 12 [20500/60000 (33%), Loss: 2.302585	Gate loss: -0.8331	Prob open gate: 0.8519	Acc: 9.81	81.04 seconds
+Train Epoch: 12 [30500/60000 (50%), Loss: 2.302612	Gate loss: -0.8332	Prob open gate: 0.8514	Acc: 9.80	120.58 seconds
+Train Epoch: 12 [40500/60000 (67%), Loss: 2.302563	Gate loss: -0.8310	Prob open gate: 0.8502	Acc: 9.75	160.00 seconds
+Train Epoch: 12 [50500/60000 (83%), Loss: 2.302618	Gate loss: -0.8304	Prob open gate: 0.8501	Acc: 9.92	199.54 seconds
+Train Epoch: 12 [60000/60000 (99%), Loss: 2.302619	Gate loss: -0.8309	Prob open gate: 0.8506	Acc: 9.88	237.06 seconds
+
+Still not learning.
+
+Try learning with no gates. Could train such a model, then train the gates individually to be open, then train
+the whole thing to have closed gates.
+	ipython -i mnist_2d_routenet_1to1_output_banks.py -- --epochs 100 --lambda-nll 1.0 --lr 0.05 --batch-size 500 --log-interval 20 --no-gates
+LR = 0.009363
+Train Epoch: 56 [00500/60000 (0%), Loss: 0.618487	Gate loss: 0.0000	Prob open gate: 0.4961	Acc: 82.40	1.65 seconds
+Train Epoch: 56 [10500/60000 (17%), Loss: 0.652659	Gate loss: 0.0000	Prob open gate: 0.4967	Acc: 78.87	25.89 seconds
+Train Epoch: 56 [20500/60000 (33%), Loss: 0.676244	Gate loss: 0.0000	Prob open gate: 0.4961	Acc: 77.08	50.27 seconds
+Train Epoch: 56 [30500/60000 (50%), Loss: 0.681030	Gate loss: 0.0000	Prob open gate: 0.4972	Acc: 77.57	74.57 seconds
+Train Epoch: 56 [40500/60000 (67%), Loss: 0.676271	Gate loss: 0.0000	Prob open gate: 0.4968	Acc: 78.22	99.01 seconds
+Train Epoch: 56 [50500/60000 (83%), Loss: 0.685729	Gate loss: 0.0000	Prob open gate: 0.4975	Acc: 77.49	123.32 seconds
+Train Epoch: 56 [60000/60000 (99%), Loss: 0.610202	Gate loss: 0.0000	Prob open gate: 0.4977	Acc: 80.78	146.34 seconds
+
+Test set: Average loss: 36161.1206, Accuracy: 7978/10000 (79.8%)
+
+Try shallower net with increasing number of neurons.  Can we alter code to train layers 1-N, then add layer N+1, then train again, and repeat?
+

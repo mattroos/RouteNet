@@ -443,6 +443,7 @@ def test_softgate(no_gates=False):
     cnt_batches = 0
     cnt_samples = 0
     pred_all = np.asarray([])
+    t_start = time.time()   
     for data, target in test_loader:
         if args.cuda:
             data, target = data.cuda(), target.cuda()
@@ -484,9 +485,9 @@ def test_softgate(no_gates=False):
     test_prob_open_gate /= cnt_batches
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
     acc = 100. * correct / cnt_samples
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%), Duration: {:0.4f} seconds\n'.format(
         test_loss, correct, cnt_samples,
-        100. * correct / cnt_samples))
+        100. * correct / cnt_samples, time.time()-t_start))
     cm = confusion_matrix(targets_all, pred_all)
     print('Confusion Matrix:')
     print(cm)

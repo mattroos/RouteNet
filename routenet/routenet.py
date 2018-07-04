@@ -375,19 +375,8 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     # For unknown reasons at this time, the model learns as desired when the
                     # gate layers are biased but the data layers are not. Not clear why it
                     # doesn't learn as well when the reverse is true.
-
-                    # # Works, but cheating. Data nodes could fire even if gated off. Use bias <=0 only?
-                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
-                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=True))
-
-                    # Works okay?
                     self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=True))
                     self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
-
-                    # # Works okay? And is best for implementation as hard gating.
-                    # self.hidden2hidden_gate[i_source].append(nn.Linear(n_neurons_per_hidd_bank, 1, bias=False))
-                    # self.hidden2hidden_data[i_source].append(nn.Linear(n_neurons_per_hidd_bank, n_neurons_per_hidd_bank, bias=False))
-
                     self.hidden2hidden_gate_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_gate))
                     self.hidden2hidden_data_dropout[i_source].append(nn.Dropout(p=self.prob_dropout_data))
                 else:
@@ -411,6 +400,21 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
             self.hidden2output.append(None)
         for i_output_bank in idx_output_banks:
             self.hidden2output[i_output_bank] = nn.Linear(n_neurons_per_hidd_bank, 1, bias=False)
+
+    def freeze_data_params(self):
+        # Freeze all parameters
+        for param in self.parameters():
+            param.requires_grad = False
+        # Unfreeze gate parameters
+        for i_source in range(self.n_hidd_banks):
+            for i_target in range(self.n_hidd_banks):
+                if self.bank_conn[i_source, i_target]:
+                    for param in self.hidden2hidden_gate[i_source][i_target].parameters():
+                        param.requires_grad = True
+
+    def unfreeze_all_params(self):
+        for param in self.parameters():
+            param.requires_grad = True
 
     @classmethod
     def init_from_files(cls, model_base_filename):
@@ -466,15 +470,22 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                 dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
                 gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
                 
+                z = (gate_act.data.cpu().numpy()>1).flatten().astype(np.int)
+                n_open_gates += np.sum(z)
+
                 ## Apply hard sigmoid or RELU
                 # gate_act = F.relu(gate_act)
-                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+                # gate_act = (gate_act - 1.0)**2
+                gate_act = F.hardtanh(gate_act, -100.0, 1.0)
+                # gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
-                if not b_no_gates:
-                    if b_neg_gate_loss:
-                        total_gate_act -= gate_act
-                    else:
-                        total_gate_act += gate_act
+                # if not b_no_gates:
+                # Compute gate_loss even if gates aren't applied to the data.
+                # Can set loss weighting factor such that gate loss isn't
+                # relevent, if wanted (or the reverse!).
+                if b_neg_gate_loss:
+                    total_gate_act -= gate_act
+                else:
                     total_gate_act += gate_act
 
                 if return_gate_status:
@@ -484,9 +495,6 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     # inputs are zeros, this is functionally the same as a closed gate.
                     gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
                                                          np.any(bank_data_acts[i_source].data, axis=1)
-
-                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-                n_open_gates += np.sum(z)
 
                 dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
                 data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
