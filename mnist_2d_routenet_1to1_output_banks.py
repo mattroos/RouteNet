@@ -637,16 +637,16 @@ test_loader = torch.utils.data.DataLoader(
 # # banks_per_layer = np.asarray(banks_per_layer)
 # # bank_conn = rn.make_conn_matrix_ff_full(banks_per_layer)
 # # bank_conn = rn.make_conn_matrix_ff_part(n_layers, n_banks_per_layer, n_fan_out)
-n_layers = 3
+n_layers = 7
 n_banks_per_layer_per_dim = expanded_size/group_size_per_dim
-n_fan_out_per_dim = 99
+n_fan_out_per_dim = 3
 bank_conn = rn.make_conn_matrix_ff_part_2d(n_layers, n_banks_per_layer_per_dim, n_fan_out_per_dim)
 banks_per_layer = n_banks_per_layer_per_dim**2
 param_dict = {'n_neurons_per_input_group':n_neurons_per_input_group,
              'idx_input_banks':np.arange(banks_per_layer),
              'bank_conn':bank_conn,
              'idx_output_banks':np.arange(n_layers*banks_per_layer-10, n_layers*banks_per_layer),
-             'n_neurons_per_hidd_bank':16,
+             'n_neurons_per_hidd_bank':8,
             }
 if args.load:
     model = rn.RouteNetOneToOneOutputGroupedInputs.init_from_files(fullRootFilenameSoftModel)
@@ -657,6 +657,7 @@ else:
 if args.cuda:
     model.cuda()
 # model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
+model.init_gate_bias(0.5)
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=1.0)

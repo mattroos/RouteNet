@@ -416,6 +416,15 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         for param in self.parameters():
             param.requires_grad = True
 
+    def init_gate_bias(self, bias=0):
+        for i_source in range(self.n_hidd_banks):
+            for i_target in range(self.n_hidd_banks):
+                if self.bank_conn[i_source, i_target]:
+                    for param in self.hidden2hidden_gate[i_source][i_target].parameters():
+                        if len(param[0])==1:
+                            # assuming this parameter is the bias term
+                            self.hidden2hidden_gate[i_source][i_target].bias.data.fill_(bias)
+
     @classmethod
     def init_from_files(cls, model_base_filename):
         # Load model metaparameters, instantiate a model with that architecture,
@@ -470,7 +479,8 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                 dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
                 gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
                 
-                z = (gate_act.data.cpu().numpy()>1).flatten().astype(np.int)
+                # z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int) & (gate_act.data.cpu().numpy()<=1).flatten().astype(np.int)
                 n_open_gates += np.sum(z)
 
                 ## Apply hard sigmoid or RELU
