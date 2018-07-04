@@ -660,7 +660,7 @@ if args.cuda:
 model.init_gate_bias(0.5)
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=1.0)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.97)
 
 ## Train it, get results on test set, and save the model
 loss_total_train = np.zeros(args.epochs)
@@ -682,7 +682,8 @@ acc_best_epoch = 0
 ##########################################################
 ## Run the main training and testing loop
 # weight = torch.ones(10)/10.
-model.freeze_data_params()
+# model.freeze_data_params()
+# model.freeze_gate_params()
 for ep in range(0, args.epochs):
     scheduler.step()
     for param_group in optimizer.param_groups:
@@ -814,6 +815,28 @@ for i, targ in enumerate(targets_unique):
     plt.clim(0,1)
     plt.title(targ)
 
+
+## Plot the fraction of open gates, grouped by target labels
+## For 2D models...
+targets_unique = np.sort(np.unique(target))
+plt.figure(fn)
+fn = fn + 1
+plt.clf()
+for i_targ, targ in enumerate(targets_unique):
+    idx = np.where(target==targ)[0]
+    mn = np.mean(gate_status[idx,:,:], axis=0)
+    for i_src_layer in range(n_layers-1):
+        plt.subplot(10, n_layers-1, i_targ*(n_layers-1)+i_src_layer+1)
+        k = n_banks_per_layer_per_dim**2
+        j_src = np.arange(i_src_layer*k, (i_src_layer+1)*k)
+        j_targ = np.arange((i_src_layer+1)*k, (i_src_layer+2)*k)
+        plt.imshow(mn[j_src, j_targ])
+        plt.clim(0,1)
+        plt.ylabel(targ, fontsize=12)
+        plt.xticks()    # turn off tick labels
+        plt.yticks()    # turn off tick labels
+
+
 ## Plot the fraction of test set open gates in connectivity map,
 ## grouped by target labels.
 print('\nPlotting test set connectivity maps. This may take a minute...')
@@ -846,49 +869,7 @@ for i, targ in enumerate(targets_unique):
 print('Done.')
 
 
-# ## Plot the fraction of training set open gates in connectivity map,
-# ## grouped by target labels.
-# ## Get model outputs for a test batch
-# print('\nPlotting training set connectivity maps. This may take a minute...')
-# model.eval()
-# cnt = 0
-# gate_status_all = np.zeros((len(train_loader)*args.batch_size,)+bank_conn.shape)
-# targets_all = np.zeros((len(train_loader)*args.batch_size))
-# for data, target in train_loader:
-#     cnt += 1
-#     if args.cuda:
-#         data, target = data.cuda(), target.cuda()
-#     data, target = Variable(data, volatile=True), Variable(target)
-#     output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data, return_gate_status=True, b_batch_norm = True)
-#     gate_status_all[(cnt-1)*args.batch_size:cnt*args.batch_size,:,:] = gate_status
-#     targets_all[(cnt-1)*args.batch_size:cnt*args.batch_size] = target.data.cpu().numpy()
-# target = targets_all
-# gate_status = gate_status_all
-# targets_unique = np.sort(np.unique(target))
-# plt.figure(fn)
-# fn = fn + 1
-# plt.clf()
-# layer_num = np.zeros((0))
-# node_num = np.zeros((0))
-# for i_layer in range(len(banks_per_layer)):
-#     layer_num = np.append(layer_num, np.full((banks_per_layer[i_layer]), i_layer))
-#     node_num = np.append(node_num, np.arange(banks_per_layer[i_layer]))
-# for i, targ in enumerate(targets_unique):
-#     idx = np.where(target==targ)[0]
-#     mn = np.mean(gate_status[idx,:,:], axis=0)
-#     plt.subplot(2,5,i+1)
-#     plt.scatter(layer_num+1, node_num+1, s=10, facecolors='none', edgecolors='k')
-#     for i_source in range(np.sum(banks_per_layer)):
-#         for i_target in range(np.sum(banks_per_layer)):
-#             alpha = mn[i_source, i_target]
-#             if alpha > 0.0:
-#                 plt.plot((layer_num[i_source]+1, layer_num[i_target]+1), (node_num[i_source]+1, node_num[i_target]+1), 'k-', alpha=alpha)
-#                 # plt.plot((layer_num[i_source], layer_num[i_target]), (node_num[i_source], node_num[i_target]), 'k-')
-#     plt.title('"%d"' % (targ))
-#     # frame1 = plt.gca()
-#     # frame1.axes.get_xaxis().set_visible(False)
-#     # frame1.axes.get_yaxis().set_visible(False)
-# print('Done.')
+
 
 
 sys.exit()

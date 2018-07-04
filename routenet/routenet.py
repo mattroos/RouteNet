@@ -412,6 +412,13 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     for param in self.hidden2hidden_gate[i_source][i_target].parameters():
                         param.requires_grad = True
 
+    def freeze_gate_params(self):
+        for i_source in range(self.n_hidd_banks):
+            for i_target in range(self.n_hidd_banks):
+                if self.bank_conn[i_source, i_target]:
+                    for param in self.hidden2hidden_gate[i_source][i_target].parameters():
+                        param.requires_grad = False
+
     def unfreeze_all_params(self):
         for param in self.parameters():
             param.requires_grad = True
@@ -479,15 +486,16 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                 dropout_act = self.hidden2hidden_gate_dropout[i_source][i_target](bank_data_acts[i_source])
                 gate_act = self.hidden2hidden_gate[i_source][i_target](dropout_act)
                 
-                # z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
-                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int) & (gate_act.data.cpu().numpy()<=1).flatten().astype(np.int)
+                z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
+                # z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int) & \
+                #     np.any(bank_data_acts[i_source].data, axis=1).flatten().astype(np.int)
                 n_open_gates += np.sum(z)
 
                 ## Apply hard sigmoid or RELU
                 # gate_act = F.relu(gate_act)
                 # gate_act = (gate_act - 1.0)**2
-                gate_act = F.hardtanh(gate_act, -100.0, 1.0)
-                # gate_act = F.hardtanh(gate_act, 0.0, 1.0)
+                # gate_act = F.hardtanh(gate_act, -100.0, 1.0)
+                gate_act = F.hardtanh(gate_act, 0.0, 1.0)
 
                 # if not b_no_gates:
                 # Compute gate_loss even if gates aren't applied to the data.
@@ -536,7 +544,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
             #     output += data_act
 
         # Should we gate the one-to-one outputs?  Just trying RELU for now...
-        output = F.relu(output)
+        # output = F.relu(output)
 
         total_gate_act /= self.n_bank_conn  # average per connection
 
