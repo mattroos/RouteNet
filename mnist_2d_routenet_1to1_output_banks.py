@@ -14,9 +14,11 @@ import sys
 import ConfigParser
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+import scipy.io as sio
 
 import routenet as rn
 import pdb
+import pickle
 
 plt.ion()
 
@@ -202,6 +204,7 @@ dirMnistData = configParser.get(data_section, 'dirMnistData')
 dirCifar10Data = configParser.get(data_section, 'dirCifar10Data')
 fullRootFilenameSoftModel = configParser.get(data_section, 'fullRootFilenameSoftModel')
 fullRootFilenameHardModel = configParser.get(data_section, 'fullRootFilenameHardModel')
+fullRootFilenameSoftModelLastEpoch = configParser.get(data_section, 'fullRootFilenameSoftModelLastEpoch')
 
 ## Get training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -320,7 +323,7 @@ def train_softgate(epoch, weight=None):
     t_start = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
         target = target[:,0].contiguous()    # not using position informtion, just class label
-
+        
         if args.cuda:
             weight = weight.cuda()
             target = target.cuda()
@@ -380,7 +383,7 @@ def train_softgate(epoch, weight=None):
             targets_all = np.asarray([])
 
         if batch_idx % args.log_interval == 0:
-            acc = (100. * correct) / (cnt*args.batch_size)
+            acc = (100. * float(correct)) / (cnt*args.batch_size)
             print('Train Epoch: {} [{:05d}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
                 epoch, (batch_idx+1)*len(data[0]), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
@@ -391,7 +394,7 @@ def train_softgate(epoch, weight=None):
             correct = 0.0
 
 
-    acc = (100. * correct) / (cnt*args.batch_size)
+    acc = (100. * float(correct)) / (cnt*args.batch_size)
     print('Train Epoch: {} [{}/{} ({:.0f}%), Loss: {:.6f}\tGate loss: {:.4f}\tProb open gate: {:.4f}\tAcc: {:.2f}\t{:.2f} seconds'.format(
         epoch, (batch_idx+1)*len(data[0]), len(train_loader.dataset),
         100. * batch_idx / len(train_loader), loss_sum/cnt, loss_gate_sum/cnt, prob_open_gate_sum/cnt, acc, time.time()-t_start))
@@ -449,7 +452,7 @@ def test_hardgate():
     test_loss_gate /= len(test_loader.dataset)
     test_prob_open_gate /= cnt
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
-    acc = 100. * correct / len(test_loader.dataset)
+    acc = 100. * float(correct) / len(test_loader.dataset)
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%), Duration: {:0.4f} seconds\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset), time.time()-t_start))
@@ -492,15 +495,33 @@ def test_softgate():
 
         target = Variable(target)
         for i_input_group in range(len(data)):
-            data[i_input_group] = Variable(data[i_input_group], volatile=True)
+            # data[i_input_group] = Variable(data[i_input_group], volatile=True)
+            data[i_input_group] = Variable(data[i_input_group])
 
+        # DEBUGGING: Convert everything to number and save
+        '''
+        targ = target.data.cpu().numpy()
+        im = []
+        for d in data:
+            im.append(d.data.cpu().numpy())
+        '''
+        
         output, total_gate_act, prob_open_gate, gate_status = model.forward_softgate(data,
+        #output, total_gate_act, prob_open_gate, gate_status, gate_status_value = model.forward_softgate(data,
                                                                                      return_gate_status = return_gate_status,
                                                                                      b_batch_norm = b_batch_norm,
                                                                                      b_use_cuda = args.cuda,
                                                                                      b_no_gates = args.no_gates,
                                                                                      b_neg_gate_loss = args.neg_gate_loss)
-
+        # DEBUGGING: Convert everything to number and save
+        '''
+        out = output.data.cpu().numpy()
+        #gate_data_dict = {'im':im, 'targ':targ, 'gate_status':gate_status, 'output':out}
+        gate_data_dict = {'im':im, 'targ':targ, 'gate_status':gate_status, 'gate_status_value':gate_status_value, 'output':out}
+        sio.savemat('gate_data.mat',gate_data_dict)
+        pdb.set_trace()
+        '''
+        
         # Store target labels and gate status for all samples
         if cnt_batches==0:
             gates_all = gate_status
@@ -531,10 +552,10 @@ def test_softgate():
     test_loss_gate /= cnt_batches
     test_prob_open_gate /= cnt_batches
     test_loss = lambda_nll*test_loss_nll + lambda_gate*test_loss_gate
-    acc = 100. * correct / cnt_samples
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%), Duration: {:0.4f} seconds\n'.format(
+    acc = 100. * float(correct) / cnt_samples
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%), Duration: {:0.4f} seconds\n'.format(
         test_loss, correct, cnt_samples,
-        100. * correct / cnt_samples, time.time()-t_start))
+        100. * float(correct) / cnt_samples, time.time()-t_start))
     cm = confusion_matrix(targets_all, pred_all)
     print('Confusion Matrix:')
     print(cm)
@@ -591,15 +612,15 @@ elif data_set == 'random_location_mnist':
     transform=transforms.Compose([
         transforms.ToTensor(),
         # transforms.Normalize((0.1307,), (0.3081,)),
-        transforms.Normalize((0.5,), (0.5,)),
+        #transforms.Normalize((0.5,), (0.5,)),
         ])
     f_datasets = rn.RandomLocationMNIST
     dir_dataset = dirMnistData
     # n_input_neurons = 28 * 28
-    # expanded_size = 112
-    # group_size_per_dim = 16
-    expanded_size = 28
-    group_size_per_dim = 28/7
+    expanded_size = 112
+    group_size_per_dim = 16
+    #expanded_size = 28
+    #group_size_per_dim = 28/7
     n_neurons_per_input_group = group_size_per_dim**2
     kwargs_datasets = {'expanded_size':expanded_size, 'group_size_1D':group_size_per_dim}
 else:
@@ -629,6 +650,7 @@ test_loader = torch.utils.data.DataLoader(
                     shuffle = False,
                     **kwargs)
 
+sys.stdout.flush()
 ## Instantiate network model
 # n_layers = 3
 # n_banks_per_layer = 20
@@ -646,18 +668,27 @@ param_dict = {'n_neurons_per_input_group':n_neurons_per_input_group,
              'idx_input_banks':np.arange(banks_per_layer),
              'bank_conn':bank_conn,
              'idx_output_banks':np.arange(n_layers*banks_per_layer-10, n_layers*banks_per_layer),
-             'n_neurons_per_hidd_bank':8,
+             'n_neurons_per_hidd_bank':128,
             }
 if args.load:
+    print('Loading existing model and weights from files. This can take several minutes...')
+    t_start = time.time()
     model = rn.RouteNetOneToOneOutputGroupedInputs.init_from_files(fullRootFilenameSoftModel)
+    print('\tDone. %d seconds.' % (time.time() - t_start))
 else:
     # model = rn.RouteNet(**param_dict)
     # model = rn.RouteNetRecurrentGate(**param_dict)
     model = rn.RouteNetOneToOneOutputGroupedInputs(**param_dict)
+    model.init_gate_bias(0.5)
 if args.cuda:
     model.cuda()
 # model.bias_limit(None, 0)   # Don't allow positive biases on hidden or output banks/nodes
-model.init_gate_bias(0.5)
+
+#weights = []
+#for param in model.parameters():
+#    if param.data.cpu().numpy().size==1:
+#        weights.append(param.data)
+#pdb.set_trace()
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.97)
@@ -679,6 +710,8 @@ t_start = time.time()
 acc_best = 0
 acc_best_epoch = 0
 
+
+#test_softgate()
 ##########################################################
 ## Run the main training and testing loop
 # weight = torch.ones(10)/10.
@@ -689,7 +722,10 @@ for ep in range(0, args.epochs):
     for param_group in optimizer.param_groups:
         print('LR = %f' % param_group['lr'])
     loss_total_train[ep], loss_nll_train[ep], loss_gate_train[ep], prob_open_gate_train[ep], acc_train[ep] = train_softgate(ep+1)
-    loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted, cm = test_softgate()
+    t_test = time.time()
+    with torch.no_grad():
+        loss_total_test[ep], loss_nll_test[ep], loss_gate_test[ep], prob_open_gate_test[ep], acc_test[ep], gate_status, target, predicted, cm = test_softgate()
+    print('Testing duration = %f' % (time.time() - t_test))
     # weight = torch.FloatTensor( np.sum(np.diag(cm)) - np.diag(cm))**2
     # weight = weight/sum(weight)
     # print(weight.view(1,-1))
@@ -705,10 +741,13 @@ for ep in range(0, args.epochs):
         print('args.always_save: Saving model.\n')
         model.save_model(fullRootFilenameSoftModel)
 
+    model.save_model(fullRootFilenameSoftModelLastEpoch)
+        
 dur = time.time()-t_start
 print('Time = %f, %f sec/epoch' % (dur, dur/args.epochs))
+sys.stdout.flush()
 ##########################################################
-
+sys.exit()
 
 ## Compare soft and hard gating on test set
 #test_compare()
