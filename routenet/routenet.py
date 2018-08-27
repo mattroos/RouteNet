@@ -207,11 +207,15 @@ class RouteNet(nn.Module):
     def init_from_files(cls, model_base_filename):
         # Load model metaparameters, instantiate a model with that architecture,
         # load model weights, and set the model weights.
+        print('\tInitializing model architecture...')
         param_dict = np.load('%s.npy' % (model_base_filename)).item()
         net = cls(**param_dict)
         # if b_use_cuda:
         #     net = net.cuda()
-        net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        print('\tLoading model parameter values...')
+        #net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        x = torch.load('%s.tch' % (model_base_filename))
+        net.load_state_dict(x)
         return net
 
     def forward_softgate(self, x, return_gate_status=False, b_use_cuda=False):
@@ -231,6 +235,7 @@ class RouteNet(nn.Module):
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+            # gate_status_value = np.full((batch_size,) + self.bank_conn.shape, -100.0)
 
         # Batch norm the inputs.
         if b_batch_norm:
@@ -262,6 +267,7 @@ class RouteNet(nn.Module):
 
                 if return_gate_status:
                     gate_status[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0] > 0
+                    #gate_status_value[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0]
                     z = (gate_act.data.cpu().numpy()>0).flatten().astype(np.int)
                     n_open_gates += np.sum(z)
 
@@ -292,6 +298,7 @@ class RouteNet(nn.Module):
         total_gate_act /= self.n_bank_conn  # average per connection
 
         if return_gate_status:
+            #return output, total_gate_act, prob_open_gate, gate_status, gate_status_value
             return output, total_gate_act, prob_open_gate, gate_status
         else:
             return output, total_gate_act
@@ -390,8 +397,10 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         self.input_batch_norm = nn.ModuleList()
         self.input2hidden_data = nn.ModuleList()
         for i_input_group in range(n_input_groups):
-            self.input_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_input_group))
-            self.input2hidden_data.append(nn.Linear(self.n_neurons_per_input_group, n_neurons_per_hidd_bank, bias=True))
+            # self.input_batch_norm.append(nn.BatchNorm1d(self.n_neurons_per_input_group))
+            # self.input2hidden_data.append(nn.Linear(self.n_neurons_per_input_group, n_neurons_per_hidd_bank, bias=True))
+            self.input_batch_norm.append(BatchScale(self.n_neurons_per_input_group))
+            self.input2hidden_data.append(nn.Linear(self.n_neurons_per_input_group, n_neurons_per_hidd_bank, bias=False))
 
         # Create the connections between output banks and network output layer.
         # Do not use a bias, so hard gating will be equivalent to soft gating.
@@ -428,19 +437,24 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
             for i_target in range(self.n_hidd_banks):
                 if self.bank_conn[i_source, i_target]:
                     for param in self.hidden2hidden_gate[i_source][i_target].parameters():
-                        if len(param[0])==1:
-                            # assuming this parameter is the bias term
+                        # if len(param[0])==1:
+                        if param.data.cpu().numpy().size==1:
+                            # assuming this parameter is the bias term since it's a single scalar
                             self.hidden2hidden_gate[i_source][i_target].bias.data.fill_(bias)
 
     @classmethod
     def init_from_files(cls, model_base_filename):
         # Load model metaparameters, instantiate a model with that architecture,
         # load model weights, and set the model weights.
+        print('\tInitializing model architecture...')
         param_dict = np.load('%s.npy' % (model_base_filename)).item()
         net = cls(**param_dict)
         # if b_use_cuda:
         #     net = net.cuda()
-        net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        print('\tLoading model parameter values...')
+        #net.load_state_dict(torch.load('%s.tch' % (model_base_filename)))
+        x = torch.load('%s.tch' % (model_base_filename))
+        net.load_state_dict(x) # this is very slow. too many torch modules.
         return net
 
     def forward_softgate(self, x, return_gate_status=False, b_batch_norm=False, b_use_cuda=False, b_no_gates=False, b_neg_gate_loss=False):
@@ -464,6 +478,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
 
         if return_gate_status:
             gate_status = np.full((batch_size,) + self.bank_conn.shape, False)
+            #gate_status_value = np.full((batch_size,) + self.bank_conn.shape, -100.0)
 
         # Batch norm the inputs.
         if b_batch_norm:
@@ -511,8 +526,9 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
                     # greater than zero and one or more activations from the source
                     # bank are non-zero.  I.e., if the gate is open but all the data
                     # inputs are zeros, this is functionally the same as a closed gate.
-                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) & \
-                                                         np.any(bank_data_acts[i_source].data, axis=1)
+                    gate_status[:, i_source, i_target] = (gate_act.data.cpu().numpy()[:,0] > 0) #& \
+                                                         #np.any(bank_data_acts[i_source].data, axis=1)
+                    #gate_status_value[:, i_source, i_target] = gate_act.data.cpu().numpy()[:,0]
 
                 dropout_act = self.hidden2hidden_data_dropout[i_source][i_target](bank_data_acts[i_source])
                 data_act = self.hidden2hidden_data[i_source][i_target](dropout_act)
@@ -537,7 +553,8 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         # Update activations of the output layer. The output banks are not gated.
         for i_output_neuron, i_output_bank in enumerate(self.idx_output_banks):
             data_act = self.hidden2output[i_output_bank](bank_data_acts[i_output_bank])
-            output[:,i_output_neuron] = data_act
+            # output[:,i_output_neuron] = data_act
+            output[:,i_output_neuron] = data_act[:,0]
             # if output is None:
             #     output = data_act
             # else:
@@ -550,6 +567,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
 
         if return_gate_status:
             return output, total_gate_act, prob_open_gate, gate_status
+            #return output, total_gate_act, prob_open_gate, gate_status, gate_status_value
         else:
             return output, total_gate_act, prob_open_gate
 
@@ -1413,7 +1431,6 @@ class RandomLocationMNIST(data.Dataset):
         top = random.randint(0, self.pad_each_side)
         img = img[top:top+self.expanded_size, left:left+self.expanded_size]
         img = torch.ByteTensor(img)
-
 
         # doing this so that it is consistent with all other datasets
         # to return a PIL Image
