@@ -98,15 +98,20 @@ def make_conn_matrix_ff_part_2d(n_layers, n_banks_per_layer_per_dim, n_fan_out_p
     fh = (int(n_fan_out_per_dim)-1)/2   # length of one-side ("half") of fan-out
 
     # Build connectivity sub-matrix for single pair of adjacent layers.
-    # Probably a better way to do this using toeplitz().
+    # No doubt there is more efficient code for this.
     sub_conn = np.full((n_banks_per_layer, n_banks_per_layer), False)
     a = np.expand_dims(np.arange(-fh,fh+1), 1)
-    b = np.expand_dims(np.arange(-fh,fh+1) *n_banks_per_layer_per_dim, 0)
-    i_src_offsets = (a+b).flatten()
-    for i_targ in range(0, n_banks_per_layer):
-        i_src = i_src_offsets + i_targ
-        idx_valid = np.where((i_src>=0) & (i_src<n_banks_per_layer))[0]
-        sub_conn[i_src[idx_valid], i_targ] = True
+    for x_targ in range(n_banks_per_layer_per_dim):
+        for y_targ in range(n_banks_per_layer_per_dim):
+            i_targ = x_targ * n_banks_per_layer_per_dim + y_targ
+            x_src = x_targ + a
+            y_src = y_targ + a
+            x_src, y_src = np.meshgrid(x_src, y_src)
+            x_src = x_src.flatten()
+            y_src = y_src.flatten()
+            idx = np.where((x_src>=0) & (y_src>=0) & (x_src<n_banks_per_layer_per_dim) & (y_src<n_banks_per_layer_per_dim))[0]
+            i_src = x_src[idx]*n_banks_per_layer_per_dim + y_src[idx]
+            sub_conn[i_src, i_targ] = True
 
     # Get locations for submatrices in larger matrix
     i_upper = np.arange(n_layers-1) * n_banks_per_layer
@@ -436,11 +441,7 @@ class RouteNetOneToOneOutputGroupedInputs(nn.Module):
         for i_source in range(self.n_hidd_banks):
             for i_target in range(self.n_hidd_banks):
                 if self.bank_conn[i_source, i_target]:
-                    for param in self.hidden2hidden_gate[i_source][i_target].parameters():
-                        # if len(param[0])==1:
-                        if param.data.cpu().numpy().size==1:
-                            # assuming this parameter is the bias term since it's a single scalar
-                            self.hidden2hidden_gate[i_source][i_target].bias.data.fill_(bias)
+                    self.hidden2hidden_gate[i_source, i_target].bias.data.fill_(bias)
 
     @classmethod
     def init_from_files(cls, model_base_filename):
