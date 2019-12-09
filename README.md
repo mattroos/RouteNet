@@ -6,4 +6,4 @@ Similar ideas are finally starting to show up in the literature. E.g.,
 
  + [Batch-Shaped Channel Gated Networks](https://arxiv.org/abs/1907.06627)
  + [A Novel Design of Adaptive and Hierarchical Convolutional Neural Networks using Partial Reconfiguration on FPGA](https://arxiv.org/abs/1909.05653) (A different idea but still of interest.)
-
+ + [Dynamic Convolutions: Exploiting Spatial Sparsity for Faster Inference](https://arxiv.org/abs/1912.03203)
